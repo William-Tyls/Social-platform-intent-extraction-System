@@ -92,18 +92,20 @@ def test_normalize_label_irrelevant_fallback():
     assert normalize_label("") == "IRRELEVANT"
 
 
-# ---- build_batch_classify_prompt ----
+# ---- build_unified_batch_prompt ----
 
 def test_batch_prompt_includes_all_tweets_and_count():
-    tweets = [
-        {"author_handle": "a1", "tweet_text": "hello"},
-        {"author_handle": "a2", "tweet_text": "world"},
-        {"author_handle": "a3", "tweet_text": "foo"},
+    from _normalize import normalize_item
+    from _llm import build_unified_batch_prompt
+    items = [
+        normalize_item({"tweet_id": "1", "author_handle": "a1", "tweet_text": "hello"}, "twitter"),
+        normalize_item({"tweet_id": "2", "author_handle": "a2", "tweet_text": "world"}, "twitter"),
+        normalize_item({"tweet_id": "3", "author_handle": "a3", "tweet_text": "foo"}, "twitter"),
     ]
-    prompt = llm_filter.build_batch_classify_prompt(tweets, "测试目标")
-    assert "[1] @a1: hello" in prompt
-    assert "[2] @a2: world" in prompt
-    assert "[3] @a3: foo" in prompt
+    prompt = build_unified_batch_prompt(items, "测试目标")
+    assert "hello" in prompt
+    assert "world" in prompt
+    assert "foo" in prompt
     assert "3 条" in prompt  # 数组长度声明
 
 

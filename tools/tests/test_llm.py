@@ -1,12 +1,12 @@
 """LLM 共享模块 单元测试。
 
-覆盖 _llm.py 的纯函数:
+覆盖 _llm.py 的纯函数 (均接受归一化 schema):
   - normalize_label: 标签归一化
   - parse_llm_json: JSON 解析 (markdown 容忍)
   - parse_comment_labels: 批量标签解析
   - build_classify_prompt: 单条分类提示词
   - build_comment_batch_prompt: 评论批量提示词
-  - build_batch_classify_prompt: 推文批量提示词
+  - build_unified_batch_prompt: 跨平台批量提示词
 
 运行:
     python tools/tests/test_llm.py              # 独立运行
@@ -21,13 +21,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _llm import (  # noqa: E402
-    build_batch_classify_prompt,
     build_classify_prompt,
     build_comment_batch_prompt,
+    build_unified_batch_prompt,
     normalize_label,
     parse_comment_labels,
     parse_llm_json,
 )
+from _normalize import normalize_item  # noqa: E402
 
 
 # ====================================================================
@@ -139,17 +140,15 @@ def test_parse_comment_labels_case_insensitive():
 
 
 # ====================================================================
-# build_classify_prompt
+# build_classify_prompt (归一化 item)
 # ====================================================================
 
 def test_build_classify_prompt_basic():
-    item = {
-        "author_handle": "testuser",
-        "author_name": "Test User",
-        "tweet_text": "这是一条测试推文",
-        "likes": 10,
-        "replies": 3,
-    }
+    item = normalize_item({
+        "tweet_id": "1", "author_handle": "testuser",
+        "author_name": "Test User", "tweet_text": "这是一条测试推文",
+        "likes": 10, "replies": 3,
+    }, "twitter")
     prompt = build_classify_prompt(item, "AI 资讯")
     assert "@testuser" in prompt
     assert "Test User" in prompt
@@ -161,17 +160,13 @@ def test_build_classify_prompt_basic():
 
 
 def test_build_classify_prompt_with_comments():
-    item = {
-        "author_handle": "a1",
-        "author_name": "A",
-        "tweet_text": "post",
-        "likes": 0,
-        "replies": 0,
+    item = normalize_item({
+        "tweet_id": "1", "author_handle": "a1", "tweet_text": "post",
         "comments": [
             {"commenter_handle": "c1", "text": "comment1"},
             {"commenter_handle": "c2", "text": "comment2"},
         ],
-    }
+    }, "twitter")
     prompt = build_classify_prompt(item, "test")
     assert "comment1" in prompt
     assert "comment2" in prompt
@@ -179,55 +174,48 @@ def test_build_classify_prompt_with_comments():
 
 
 def test_build_classify_prompt_with_profile():
-    item = {
-        "author_handle": "a1",
-        "author_name": "A",
+    item = normalize_item({
+        "tweet_id": "1", "author_handle": "a1",
         "tweet_text": "post",
-        "likes": 0,
-        "replies": 0,
         "profile": {"bio": "developer", "followers": 100, "following": 50},
-    }
+    }, "twitter")
     prompt = build_classify_prompt(item, "test")
     assert "developer" in prompt
     assert "粉丝: 100" in prompt
 
 
 def test_build_classify_prompt_video_mode():
-    """有 view_count 时归类为视频。"""
-    item = {
-        "author_handle": "channel",
-        "author_name": "Channel",
+    item = normalize_item({
+        "tweet_id": "v1", "author_handle": "channel",
         "tweet_text": "video title",
-        "likes": 0,
-        "replies": 0,
         "view_count": 500,
-    }
+    }, "youtube")
     prompt = build_classify_prompt(item, "test")
     assert "视频" in prompt
 
 
 def test_build_classify_prompt_no_comments():
-    item = {
-        "author_handle": "a",
-        "author_name": "A",
+    item = normalize_item({
+        "tweet_id": "1", "author_handle": "a",
         "tweet_text": "post",
-        "likes": 0,
-        "replies": 0,
-    }
+    }, "twitter")
     prompt = build_classify_prompt(item, "test")
     assert "(无评论)" in prompt
 
 
 # ====================================================================
-# build_comment_batch_prompt
+# build_comment_batch_prompt (归一化 comments + parent item)
 # ====================================================================
 
 def test_build_comment_batch_prompt():
     comments = [
-        {"commenter_handle": "u1", "commenter_name": "U1", "text": "good"},
-        {"commenter_handle": "u2", "commenter_name": "U2", "text": "bad"},
+        {"author": "u1", "content": "good"},
+        {"author": "u2", "content": "bad"},
     ]
-    parent = {"author_handle": "op", "tweet_text": "original post"}
+    parent = normalize_item({
+        "tweet_id": "1", "author_handle": "op",
+        "tweet_text": "original post",
+    }, "twitter")
     prompt = build_comment_batch_prompt(comments, parent, "AI")
     assert "@u1" in prompt
     assert "@u2" in prompt
@@ -240,54 +228,50 @@ def test_build_comment_batch_prompt():
 
 
 def test_build_comment_batch_prompt_empty_comments():
-    prompt = build_comment_batch_prompt([], {"author_handle": "op", "tweet_text": "post"}, "goal")
+    parent = normalize_item({"tweet_id": "1"}, "twitter")
+    prompt = build_comment_batch_prompt([], parent, "goal")
     assert "0 条" in prompt
 
 
-def test_build_comment_batch_prompt_fallback_author():
-    """commenter_handle 缺失时回退到 author。"""
-    comments = [{"author": "fallback_user", "text": "hi"}]
-    parent = {"author_handle": "op", "tweet_text": "post"}
+def test_build_comment_batch_prompt_uses_author():
+    """归一化格式的 author 字段被正确渲染。"""
+    comments = [{"author": "fallback_user", "content": "hi"}]
+    parent = normalize_item({"tweet_id": "1"}, "twitter")
     prompt = build_comment_batch_prompt(comments, parent, "goal")
     assert "@fallback_user" in prompt
 
 
 # ====================================================================
-# build_batch_classify_prompt
+# build_unified_batch_prompt (归一化 item 列表)
 # ====================================================================
+
+def _make(item, platform="twitter"):
+    return normalize_item(item, platform)
+
 
 def test_build_batch_prompt_all_items():
     items = [
-        {"author_handle": "a1", "tweet_text": "hello"},
-        {"author_handle": "a2", "tweet_text": "world"},
+        _make({"tweet_id": "1", "author_handle": "a1", "tweet_text": "hello"}),
+        _make({"tweet_id": "2", "author_handle": "a2", "tweet_text": "world"}),
     ]
-    prompt = build_batch_classify_prompt(items, "测试")
-    assert "[1] @a1: hello" in prompt
-    assert "[2] @a2: world" in prompt
+    prompt = build_unified_batch_prompt(items, "测试")
+    assert "hello" in prompt
+    assert "world" in prompt
     assert "2 条" in prompt
     assert "测试" in prompt
 
 
 def test_build_batch_prompt_empty():
-    prompt = build_batch_classify_prompt([], "goal")
+    prompt = build_unified_batch_prompt([], "goal")
     assert "0 条" in prompt
 
 
 def test_build_batch_prompt_truncation():
     """正文超过 300 字符时截断。"""
-    long_text = "x" * 500
-    items = [{"author_handle": "a", "tweet_text": long_text}]
-    prompt = build_batch_classify_prompt(items, "goal")
-    # 不应包含完整的 500 字符
-    assert "x" * 350 not in prompt
+    items = [_make({"tweet_id": "x", "tweet_text": "y" * 500})]
+    prompt = build_unified_batch_prompt(items, "goal")
+    assert "y" * 350 not in prompt
 
-
-# ====================================================================
-# build_unified_batch_prompt (基于归一化 schema)
-# ====================================================================
-
-from _normalize import normalize_item  # noqa: E402
-from _llm import build_unified_batch_prompt  # noqa: E402
 
 _UNIFIED_TWITTER = normalize_item({
     "tweet_id": "1",

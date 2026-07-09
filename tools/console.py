@@ -2078,25 +2078,10 @@ class ConsoleApp:
                     if labels[i]:
                         continue
                     try:
-                        # 将归一化 item 转回旧格式供 build_classify_prompt 使用
-                        fallback_item = {
-                            "author_handle": item.get("author", ""),
-                            "author_name": item.get("author_name", ""),
-                            "tweet_text": item.get("content", {}).get("title", "")[:500],
-                            "likes": item.get("meta", {}).get("likes", 0),
-                            "replies": item.get("meta", {}).get("replies", 0),
-                            "view_count": item.get("meta", {}).get("views", 0),
-                            "profile": item.get("profile"),
-                            "comments": [
-                                {"commenter_handle": c.get("author", ""),
-                                 "text": c.get("content", "")}
-                                for c in item.get("comments", [])[:10]
-                            ],
-                        }
                         raw_item = call_deepseek(
                             [
                                 {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                                {"role": "user", "content": build_classify_prompt(fallback_item, goal)},
+                                {"role": "user", "content": build_classify_prompt(item, goal)},
                             ],
                             api_key=api_key, max_tokens=10, timeout=30, retries=1,
                         )
@@ -2115,14 +2100,7 @@ class ConsoleApp:
                     # 评论区也批量分类
                     comments = item.get("comments") or []
                     if comments:
-                        batch_prompt = build_comment_batch_prompt(
-                            [{"commenter_handle": c.get("author", ""),
-                              "text": c.get("content", "")}
-                             for c in comments],
-                            {"author_handle": item.get("author", ""),
-                             "tweet_text": item.get("content", {}).get("title", "")},
-                            goal,
-                        )
+                        batch_prompt = build_comment_batch_prompt(comments, item, goal)
                         try:
                             c_raw = call_deepseek(
                                 [

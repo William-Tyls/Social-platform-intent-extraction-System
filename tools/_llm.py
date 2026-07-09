@@ -1,12 +1,17 @@
 """LLM 过滤共享模块 — console.py 和 llm_filter.py 共用。
 
 提供:
-  - Prompt 构建: 推文/评论分类提示词
+  - Prompt 构建: 推文/评论分类提示词 (统一归一化 schema)
   - API 调用: DeepSeek chat completions
   - 结果解析: 标签归一化、JSON 数组解析
 
+所有 prompt 函数均接受 _normalize.py 产出的统一格式::
+
+    {id, platform, author, author_name, content: {title, body}, meta: {...},
+     comments: [{author, content}, ...], profile: {...}}
+
 用法:
-    from _llm import build_classify_prompt, call_deepseek, normalize_label
+    from _llm import build_classify_prompt, build_unified_batch_prompt, call_deepseek
 
 环境变量: DEEPSEEK_API_KEY
 """
@@ -20,23 +25,29 @@ import time
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 MODEL = "deepseek-chat"
 
+_PLATFORM_LABEL = {"twitter": "推文", "reddit": "帖子", "youtube": "视频"}
+
 # ------------------------------------------------------------------
-# Prompt 构建
+# Prompt 构建 (统一归一化格式)
 # ------------------------------------------------------------------
 
 
 def build_classify_prompt(item: dict, goal: str) -> str:
-    """为单条推文/视频构建分类提示词。兼容 Twitter/Reddit/YouTube 三种数据格式。
+    """单条分类提示词 — 接受归一化 item。
 
-    item 需含: author_handle, author_name, tweet_text, likes, replies/comments
-    可选: profile, description
+    读取 item.content.title、item.content.body、item.comments[].author/content、
+    item.meta.*、item.profile。无字段猜测、无兜底链。
     """
-    # 评论信息
+    content = item.get("content", {})
+    meta = item.get("meta", {})
+    platform = item.get("platform", "")
+    kind = _PLATFORM_LABEL.get(platform, "推文")
+
+    # 评论
     comments = item.get("comments") or []
     if comments:
         parts = [
-            f"    评论{ci+1}: @{c.get('commenter_handle', c.get('author', '?'))}"
-            f": {c.get('text', '')[:200]}"
+            f"    评论{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:200]}"
             for ci, c in enumerate(comments[:10])
         ]
         comments_block = "\n".join(parts)
@@ -51,21 +62,20 @@ def build_classify_prompt(item: dict, goal: str) -> str:
             f"  粉丝: {profile.get('followers', 0)}\n"
             f"  关注: {profile.get('following', 0)}"
         )
-    elif item.get("description"):
-        profile_text = f"  {item['description'][:200]}"
     else:
-        profile_text = "  (未采集)"
+        body = content.get("body", "")
+        profile_text = f"  {body[:200]}" if body else "  (未采集)"
 
-    kind = "视频" if item.get("view_count") else "推文"
+    text = content.get("title", "") or content.get("body", "")
 
     return f"""判断这条{kind}是否为目标信息。
 
 筛选目标：{goal}
 
 {kind}内容：
-  作者: @{item.get('author_handle', '')} ({item.get('author_name', '')})
-  正文: {item.get('tweet_text', '')[:500]}
-  互动: 赞{item.get('likes', 0)}  评论{item.get('replies', 0)}
+  作者: @{item.get('author', '')} ({item.get('author_name', '')})
+  正文: {text[:500]}
+  互动: 赞{meta.get('likes', 0)}  评论{meta.get('replies', 0)}
 
 作者信息：
 {profile_text}
@@ -80,24 +90,26 @@ def build_classify_prompt(item: dict, goal: str) -> str:
 
 
 def build_comment_batch_prompt(comments: list[dict], parent: dict, goal: str) -> str:
-    """为一条推文/视频的所有评论构建批量分类提示词,要求 LLM 返回等长 JSON 数组。
+    """评论批量分类提示词 — 接受归一化格式的 comments 和 parent 项。
 
-    comments: [{commenter_handle, commenter_name, text}, ...]
-    parent:   父级推文/视频,含 author_handle, tweet_text
+    comments: [{"author": ..., "content": ...}, ...]
+    parent:   归一化 item, 含 author, content.title
     """
     parts = []
     for ci, c in enumerate(comments):
-        handle = c.get("commenter_handle", c.get("author", "?"))
-        name = c.get("commenter_name", c.get("author", "?"))
+        handle = c.get("author", "?")
         parts.append(
-            f"[{ci+1}] @{handle} ({name}):\n    {c.get('text', '')[:300]}"
+            f"[{ci+1}] @{handle}:\n    {c.get('content', '')[:300]}"
         )
+
+    parent_content = parent.get("content", {})
+    parent_text = parent_content.get("title", "")
 
     return f"""判断以下每条评论是否为目标信息。回复 JSON 数组。
 
 筛选目标：{goal}
 
-原帖: @{parent.get('author_handle', '?')}: {parent.get('tweet_text', '')[:200]}
+原帖: @{parent.get('author', '?')}: {parent_text[:200]}
 
 评论列表：
 {"\n\n".join(parts)}
@@ -108,24 +120,40 @@ def build_comment_batch_prompt(comments: list[dict], parent: dict, goal: str) ->
 TARGET=符合筛选目标，AD=广告/推广，IRRELEVANT=无关"""
 
 
-def build_batch_classify_prompt(items: list[dict], goal: str) -> str:
-    """把所有推文/视频编号打包,要求 LLM 一次返回等长 JSON 标签数组。"""
+def build_unified_batch_prompt(items: list[dict], goal: str) -> str:
+    """批量分类 prompt — 接受归一化 item 列表。
+
+    将 item.content.title/body 和 item.comments[].author/content 打包为
+    编号列表，要求 LLM 一次返回等长 JSON 标签数组。
+    """
     lines = []
-    for i, t in enumerate(items):
-        lines.append(
-            f"[{i+1}] @{t.get('author_handle', '')}: {t.get('tweet_text', '')[:300]}"
-        )
-    return f"""判断以下每条是否为目标信息。逐条回复 JSON 数组。
+    for i, it in enumerate(items):
+        content = it.get("content", {})
+        author = it.get("author", "?")
+        title = content.get("title", "")
+        body = content.get("body", "")
+        text = title or body or ""
+        platform_tag = _PLATFORM_LABEL.get(it.get("platform", ""), "内容")
 
-筛选目标：{goal}
+        lines.append(f"[{i+1}] 【{platform_tag}】@{author}: {text[:300]}")
 
-列表：
-{"\n".join(lines)}
+        comments = it.get("comments") or []
+        if comments:
+            for ci, c in enumerate(comments[:3]):
+                c_author = c.get("author", "?")
+                c_text = c.get("content", "")[:150]
+                lines.append(f"    评论{ci+1}: @{c_author}: {c_text}")
 
-请逐条判断,仅回复 JSON 数组(不要其他文字):
-["TARGET", "AD", "IRRELEVANT", ...]
-数组长度必须等于总数 ({len(items)} 条)。
-TARGET=符合筛选目标,AD=广告/推广,IRRELEVANT=无关"""
+    return (
+        f"判断以下每条是否为目标信息。逐条回复 JSON 数组。\n\n"
+        f"筛选目标：{goal}\n\n"
+        f"列表：\n"
+        f'{"\n".join(lines)}\n\n'
+        f"请逐条判断,仅回复 JSON 数组(不要其他文字):\n"
+        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
+        f"数组长度必须等于总数 ({len(items)} 条)。\n"
+        f"TARGET=符合筛选目标,AD=广告/推广,IRRELEVANT=无关"
+    )
 
 
 # ------------------------------------------------------------------
@@ -223,60 +251,3 @@ def call_deepseek(
             if attempt < retries:
                 time.sleep(1)
     raise last_exc  # type: ignore[misc]
-
-
-# ------------------------------------------------------------------
-# 统一批量 Prompt（基于归一化 schema）
-# ------------------------------------------------------------------
-
-_PLATFORM_LABEL = {"twitter": "推文", "reddit": "帖子", "youtube": "视频"}
-
-
-def build_unified_batch_prompt(items: list[dict], goal: str) -> str:
-    """基于归一化格式的批量分类 prompt。
-
-    将 item.content.title/body 和 item.comments[].author/content 打包为
-    编号列表，要求 LLM 一次返回等长 JSON 标签数组。无平台字段猜测，无兜底链。
-
-    用法::
-
-        from _normalize import normalize_batch
-        unified = normalize_batch(raw_list, platform)
-        prompt = build_unified_batch_prompt(unified, "筛选真实用户")
-    """
-    lines = []
-    for i, it in enumerate(items):
-        content = it.get("content", {})
-        author = it.get("author", "?")
-        title = content.get("title", "")
-        body = content.get("body", "")
-        text = title or body or ""
-        platform_tag = _PLATFORM_LABEL.get(it.get("platform", ""), "内容")
-
-        lines.append(f"[{i+1}] 【{platform_tag}】@{author}: {text[:300]}")
-
-        comments = it.get("comments") or []
-        if comments:
-            for ci, c in enumerate(comments[:3]):
-                c_author = c.get("author", "?")
-                c_text = c.get("content", "")[:150]
-                lines.append(f"    评论{ci+1}: @{c_author}: {c_text}")
-
-    return (
-        f"判断以下每条是否为目标信息。逐条回复 JSON 数组。\n\n"
-        f"筛选目标：{goal}\n\n"
-        f"列表：\n"
-        f'{"\n".join(lines)}\n\n'
-        f"请逐条判断,仅回复 JSON 数组(不要其他文字):\n"
-        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
-        f"数组长度必须等于总数 ({len(items)} 条)。\n"
-        f"TARGET=符合筛选目标,AD=广告/推广,IRRELEVANT=无关"
-    )
-
-
-def parse_comment_batch(raw: str, expected_len: int) -> list[str]:
-    """解析评论批量分类的 JSON 数组，长度不匹配时补 IRRELEVANT。
-
-    与 ``parse_comment_labels`` 的区别：名称更明确表示这是批量解析函数。
-    """
-    return parse_comment_labels(raw, expected_len)
