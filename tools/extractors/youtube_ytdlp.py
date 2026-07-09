@@ -241,7 +241,9 @@ class YtDlpExtractor:
         """将 yt-dlp 原始 JSON 扁平化为结构化 dict。"""
 
         def _take(d: dict, keys: list[str], defaults: dict | None = None) -> dict:
-            """从 dict 中提取指定 key,用 defaults 填充默认值。"""
+            """从 dict 中提取指定 key,用 defaults 填充默认值。
+            缺失的 key 从 defaults 取值; defaults 也未覆盖时返回 None。
+            """
             defaults = defaults or {}
             return {k: d.get(k, defaults.get(k)) for k in keys}
 
@@ -249,11 +251,13 @@ class YtDlpExtractor:
         for c in raw.get("comments", []):
             # yt-dlp 内部用 _time_text, 我们映射为 time_text
             norm = _take(c, self._COMMENT_FIELDS, {"parent": "root", "is_pinned": False})
-            norm["time_text"] = norm.pop("_time_text", "")
+            # _take always creates the key (None if missing), so pop+default
+            # never triggers — use `or` to fall through correctly.
+            norm["time_text"] = norm.pop("_time_text") or ""
             comments.append(norm)
 
         video = _take(raw, self._VIDEO_FIELDS, {"tags": [], "categories": []})
-        video["video_id"] = video.pop("id", raw.get("display_id", ""))
+        video["video_id"] = video.pop("id") or raw.get("display_id", "")
         video["comments"] = comments
 
         # 处理 None 值

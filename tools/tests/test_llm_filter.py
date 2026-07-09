@@ -19,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "apps"))
 
 import llm_filter  # noqa: E402  模块级已无副作用,可安全导入
 
+# llm_filter.py 内部从 _llm import, 但未重新导出; 直接从 _llm 导入
+from _llm import normalize_label, parse_llm_json  # noqa: E402
+
 
 # ---- _make_output_path ----
 
@@ -48,45 +51,45 @@ def test_output_path_double_safety_never_overwrites():
 # ---- _parse_llm_json ----
 
 def test_parse_json_plain_array():
-    assert llm_filter._parse_llm_json('["a", "b"]') == ["a", "b"]
+    assert parse_llm_json('["a", "b"]') == ["a", "b"]
 
 
 def test_parse_json_markdown_wrapped():
     raw = '```json\n["TARGET", "AD"]\n```'
-    assert llm_filter._parse_llm_json(raw) == ["TARGET", "AD"]
+    assert parse_llm_json(raw) == ["TARGET", "AD"]
 
 
 def test_parse_json_bare_code_fence():
     raw = '```\n["x"]\n```'
-    assert llm_filter._parse_llm_json(raw) == ["x"]
+    assert parse_llm_json(raw) == ["x"]
 
 
 def test_parse_json_invalid_returns_none():
-    assert llm_filter._parse_llm_json("not json at all") is None
-    assert llm_filter._parse_llm_json("") is None
-    assert llm_filter._parse_llm_json(None) is None  # type: ignore[arg-type]
+    assert parse_llm_json("not json at all") is None
+    assert parse_llm_json("") is None
+    assert parse_llm_json(None) is None  # type: ignore[arg-type]
 
 
 def test_parse_json_object():
-    assert llm_filter._parse_llm_json('{"k": 1}') == {"k": 1}
+    assert parse_llm_json('{"k": 1}') == {"k": 1}
 
 
 # ---- _normalize_label ----
 
 def test_normalize_label_target():
-    assert llm_filter._normalize_label("[TARGET]") == "TARGET"
-    assert llm_filter._normalize_label("target") == "TARGET"
+    assert normalize_label("[TARGET]") == "TARGET"
+    assert normalize_label("target") == "TARGET"
 
 
 def test_normalize_label_ad():
-    assert llm_filter._normalize_label("[AD]") == "AD"
-    assert llm_filter._normalize_label("AD") == "AD"
+    assert normalize_label("[AD]") == "AD"
+    assert normalize_label("AD") == "AD"
 
 
 def test_normalize_label_irrelevant_fallback():
-    assert llm_filter._normalize_label("[IRRELEVANT]") == "IRRELEVANT"
-    assert llm_filter._normalize_label("随机文字") == "IRRELEVANT"
-    assert llm_filter._normalize_label("") == "IRRELEVANT"
+    assert normalize_label("[IRRELEVANT]") == "IRRELEVANT"
+    assert normalize_label("随机文字") == "IRRELEVANT"
+    assert normalize_label("") == "IRRELEVANT"
 
 
 # ---- build_batch_classify_prompt ----

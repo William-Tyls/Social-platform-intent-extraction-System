@@ -54,7 +54,7 @@ def build_search_url(
 # 帖子列表提取
 # ------------------------------------------------------------------
 
-_POST_EXTRACT_JS = """(flags) => {
+_POST_EXTRACT_JS = r"""(flags) => {
     const results = [];
     const items = document.querySelectorAll('.search-result-link, .thing.link');
     for (const el of items) {
@@ -144,7 +144,7 @@ def extract_posts(page, flags: dict) -> list[dict]:
 # 评论提取
 # ------------------------------------------------------------------
 
-_COMMENT_EXTRACT_JS = """(maxC) => {
+_COMMENT_EXTRACT_JS = r"""(maxC) => {
     const results = [];
     const topLevel = document.querySelectorAll('.sitetable.nestedlisting > .thing.comment');
     for (let i = 0; i < Math.min(topLevel.length, maxC); i++) {
@@ -188,7 +188,7 @@ def extract_comments(page, permalink: str, max_comments: int) -> list[dict]:
 # 用户主页提取
 # ------------------------------------------------------------------
 
-_PROFILE_EXTRACT_JS = """() => {
+_PROFILE_EXTRACT_JS = r"""() => {
     const linkKarma = document.querySelector('.linkkarma .karma, .profile-karma .link span');
     const commentKarma = document.querySelector('.commentkarma .karma, .profile-karma .comment span');
     const created = document.querySelector('time:first-child');
@@ -225,7 +225,7 @@ def extract_profile(page, username: str) -> dict | None:
 # 翻页
 # ------------------------------------------------------------------
 
-_NEXT_PAGE_JS = """() => {
+_NEXT_PAGE_JS = r"""() => {
     const selectors = [
         '.nextprev a[rel$="next"]',
         '.nextprev a:last-child',
