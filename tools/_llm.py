@@ -223,3 +223,60 @@ def call_deepseek(
             if attempt < retries:
                 time.sleep(1)
     raise last_exc  # type: ignore[misc]
+
+
+# ------------------------------------------------------------------
+# 统一批量 Prompt（基于归一化 schema）
+# ------------------------------------------------------------------
+
+_PLATFORM_LABEL = {"twitter": "推文", "reddit": "帖子", "youtube": "视频"}
+
+
+def build_unified_batch_prompt(items: list[dict], goal: str) -> str:
+    """基于归一化格式的批量分类 prompt。
+
+    将 item.content.title/body 和 item.comments[].author/content 打包为
+    编号列表，要求 LLM 一次返回等长 JSON 标签数组。无平台字段猜测，无兜底链。
+
+    用法::
+
+        from _normalize import normalize_batch
+        unified = normalize_batch(raw_list, platform)
+        prompt = build_unified_batch_prompt(unified, "筛选真实用户")
+    """
+    lines = []
+    for i, it in enumerate(items):
+        content = it.get("content", {})
+        author = it.get("author", "?")
+        title = content.get("title", "")
+        body = content.get("body", "")
+        text = title or body or ""
+        platform_tag = _PLATFORM_LABEL.get(it.get("platform", ""), "内容")
+
+        lines.append(f"[{i+1}] 【{platform_tag}】@{author}: {text[:300]}")
+
+        comments = it.get("comments") or []
+        if comments:
+            for ci, c in enumerate(comments[:3]):
+                c_author = c.get("author", "?")
+                c_text = c.get("content", "")[:150]
+                lines.append(f"    评论{ci+1}: @{c_author}: {c_text}")
+
+    return (
+        f"判断以下每条是否为目标信息。逐条回复 JSON 数组。\n\n"
+        f"筛选目标：{goal}\n\n"
+        f"列表：\n"
+        f'{"\n".join(lines)}\n\n'
+        f"请逐条判断,仅回复 JSON 数组(不要其他文字):\n"
+        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
+        f"数组长度必须等于总数 ({len(items)} 条)。\n"
+        f"TARGET=符合筛选目标,AD=广告/推广,IRRELEVANT=无关"
+    )
+
+
+def parse_comment_batch(raw: str, expected_len: int) -> list[str]:
+    """解析评论批量分类的 JSON 数组，长度不匹配时补 IRRELEVANT。
+
+    与 ``parse_comment_labels`` 的区别：名称更明确表示这是批量解析函数。
+    """
+    return parse_comment_labels(raw, expected_len)

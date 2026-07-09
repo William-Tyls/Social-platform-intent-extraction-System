@@ -17,8 +17,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import load_env  # noqa: E402
 from _llm import (          # noqa: E402
     build_classify_prompt, build_batch_classify_prompt,
+    build_unified_batch_prompt,
     normalize_label, parse_llm_json,
 )
+from _normalize import normalize_batch  # noqa: E402
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 MODEL = "deepseek-chat"
@@ -64,13 +66,19 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
 
     labels: list[str] = [""] * len(tweets)
 
-    # 第一步: 批量
+    # 第一步: 批量 (优先使用统一 batch prompt)
     try:
+        # 检查是否已是归一化格式
+        first = tweets[0] if tweets else {}
+        if isinstance(first.get("content"), dict):
+            batch_prompt = build_unified_batch_prompt(tweets, goal)
+        else:
+            batch_prompt = build_batch_classify_prompt(tweets, goal)
         resp = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                {"role": "user", "content": build_batch_classify_prompt(tweets, goal)},
+                {"role": "user", "content": batch_prompt},
             ],
             temperature=0.1,
             max_tokens=len(tweets) * 15 + 20,
@@ -112,7 +120,8 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
         t_label["label"] = label
         labeled.append(t_label)
         icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌", "ERROR": "⚠️"}.get(label, "?")
-        print(f"  [{i+1}] {icon} {label:<12} @{t.get('author_handle', '?')}")
+        author = t.get("author", t.get("author_handle", "?"))
+        print(f"  [{i+1}] {icon} {label:<12} @{author}")
 
     print(f"\n  结果: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关")
     return labeled
@@ -129,11 +138,14 @@ def extract_findings(target_tweets: list[dict], goal: str, client, model: str = 
 
     summary = ""
     for i, t in enumerate(target_tweets):
-        summary += f"帖文{i+1} (@{t['author_handle']}): {t['tweet_text'][:300]}\n"
+        author = t.get("author", t.get("author_handle", "?"))
+        text = t.get("content", {}).get("title", "") or t.get("tweet_text", "")
+        summary += f"帖文{i+1} (@{author}): {text[:300]}\n"
         if t.get("comments"):
             for c in t["comments"][:3]:
-                handle = c.get("commenter_handle", c.get("author", "?"))
-                summary += f"  评论: @{handle}: {c['text'][:150]}\n"
+                handle = c.get("author", c.get("commenter_handle", "?"))
+                body = c.get("content", c.get("text", ""))
+                summary += f"  评论: @{handle}: {body[:150]}\n"
 
     prompt = f"""基于以下搜索结果，提取 3 条核心发现。每条用一句话概括。
 
@@ -185,7 +197,16 @@ def main():
 
     input_path = Path(input_path_str)
     raw = json.loads(input_path.read_text(encoding="utf-8"))
-    tweets = raw.get("tweets", raw.get("videos", []))
+    # 兼容新旧两种导出格式
+    if "items" in raw:
+        tweets = raw["items"]  # 归一化格式
+    else:
+        tweets = raw.get("tweets", raw.get("videos", []))
+        # 旧格式自动归一化
+        platform = "twitter"
+        if raw.get("search_query") or any(t.get("view_count") or t.get("duration") for t in tweets):
+            platform = "youtube"
+        tweets = normalize_batch(tweets, platform)
     search_term = raw.get("search_term", raw.get("search_query", ""))
 
     if not tweets:
@@ -209,7 +230,7 @@ def main():
         "kept": len(target_tweets),
         "discarded": len(tweets) - len(target_tweets),
         "findings": findings,
-        "tweets": labeled,
+        "items": labeled,
     }
 
     out_path = _make_output_path(input_path)

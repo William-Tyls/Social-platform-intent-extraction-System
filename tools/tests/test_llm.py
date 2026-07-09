@@ -282,6 +282,102 @@ def test_build_batch_prompt_truncation():
     assert "x" * 350 not in prompt
 
 
+# ====================================================================
+# build_unified_batch_prompt (基于归一化 schema)
+# ====================================================================
+
+from _normalize import normalize_item  # noqa: E402
+from _llm import build_unified_batch_prompt  # noqa: E402
+
+_UNIFIED_TWITTER = normalize_item({
+    "tweet_id": "1",
+    "author_handle": "user1",
+    "author_name": "User One",
+    "tweet_text": "这是一条测试推文",
+    "likes": 10,
+    "replies": 3,
+    "comments": [
+        {"commenter_handle": "c1", "commenter_name": "C1",
+         "text": "good post", "timestamp": "", "likes": 2},
+    ],
+}, "twitter")
+
+_UNIFIED_YOUTUBE = normalize_item({
+    "tweet_id": "vid1",
+    "author_handle": "channel",
+    "author_name": "Channel",
+    "tweet_text": "Video Title",
+    "view_count": 1000,
+    "duration": 120,
+    "comments": [],
+}, "youtube")
+
+_UNIFIED_REDDIT = normalize_item({
+    "tweet_id": "r1",
+    "author_handle": "u_reddit",
+    "author_name": "Redditor",
+    "tweet_text": "Reddit Post",
+    "comments": [
+        {"commenter_handle": "rc1", "text": "nice", "likes": 1},
+    ],
+}, "reddit")
+
+
+def test_unified_prompt_includes_platform_label():
+    items = [_UNIFIED_TWITTER, _UNIFIED_YOUTUBE, _UNIFIED_REDDIT]
+    prompt = build_unified_batch_prompt(items, "AI 资讯")
+    assert "【推文】" in prompt
+    assert "【视频】" in prompt
+    assert "【帖子】" in prompt
+
+
+def test_unified_prompt_includes_authors():
+    items = [_UNIFIED_TWITTER]
+    prompt = build_unified_batch_prompt(items, "test")
+    assert "@user1" in prompt
+
+
+def test_unified_prompt_includes_comments():
+    items = [_UNIFIED_TWITTER]
+    prompt = build_unified_batch_prompt(items, "test")
+    assert "评论1" in prompt
+    assert "@c1" in prompt
+    assert "good post" in prompt
+
+
+def test_unified_prompt_item_count():
+    items = [_UNIFIED_TWITTER, _UNIFIED_YOUTUBE]
+    prompt = build_unified_batch_prompt(items, "test")
+    assert "2 条" in prompt
+
+
+def test_unified_prompt_goal():
+    prompt = build_unified_batch_prompt([_UNIFIED_TWITTER], "筛选真实用户")
+    assert "筛选真实用户" in prompt
+
+
+def test_unified_prompt_empty_items():
+    prompt = build_unified_batch_prompt([], "goal")
+    assert "0 条" in prompt
+
+
+def test_unified_prompt_truncation():
+    """正文超过 300 字符时截断。"""
+    long = normalize_item({
+        "tweet_id": "x",
+        "tweet_text": "y" * 500,
+    }, "twitter")
+    prompt = build_unified_batch_prompt([long], "goal")
+    assert "y" * 350 not in prompt
+
+
+def test_unified_prompt_no_comments_field():
+    """无 comments 字段的 item 不崩溃。"""
+    item = normalize_item({"tweet_id": "1"}, "twitter")
+    prompt = build_unified_batch_prompt([item], "goal")
+    assert "[1]" in prompt
+
+
 # ---- 独立运行 ----
 
 def _run_all() -> int:

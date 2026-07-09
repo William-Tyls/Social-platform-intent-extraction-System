@@ -60,8 +60,10 @@ from reddit_extractor import (
 # LLM 过滤共享模块
 from _llm import (
     build_classify_prompt, build_comment_batch_prompt,
+    build_unified_batch_prompt,
     normalize_label, call_deepseek, parse_comment_labels,
 )
+from _normalize import normalize_batch  # 跨平台统一 schema
 
 # ---- 路径 ----
 
@@ -344,6 +346,7 @@ class TwitterWorker(threading.Thread):
             tweets = all_tweets
 
             self.log(f"✅ 提取完成: {len(tweets)} 条推文")
+            tweets = normalize_batch(tweets, "twitter")
             self.q.put({"type": "result", "tweets": tweets})
 
             # ---- 深度提取：评论区 + 作者主页 ----
@@ -372,7 +375,8 @@ class TwitterWorker(threading.Thread):
                             self.log(f"     → 评论提取失败: {e}", "warn")
 
                     self.log("", progress=0)
-                    # 更新结果
+                    # 归一化并更新结果
+                    tweets = normalize_batch(tweets, "twitter")
                     self.q.put({"type": "result", "tweets": tweets})
 
                 if extract_profiles:
@@ -400,7 +404,8 @@ class TwitterWorker(threading.Thread):
                         if t.get("author_handle") in profile_cache:
                             t["profile"] = profile_cache[t["author_handle"]]
 
-                    # 更新结果
+                    # 归一化并更新结果
+                    tweets = normalize_batch(tweets, "twitter")
                     self.q.put({"type": "result", "tweets": tweets})
 
         finally:
@@ -725,9 +730,10 @@ class YoutubeWorker(threading.Thread):
 
             self.log(f"提取完成: {len(tweets)} 个视频")
 
-            # 存入去重
+            # 存入去重 (使用旧格式 tweet_id)
             store.batch_mark_seen([t["tweet_id"] for t in tweets])
 
+            tweets = normalize_batch(tweets, "youtube")
             self.q.put({"type": "result", "tweets": tweets})
             self.q.put({"type": "done", "success": True})
         finally:
@@ -893,6 +899,7 @@ class RedditWorker(threading.Thread):
             # 截断到目标数
             posts = all_posts[:target]
             self.log(f"✅ 提取完成: {len(posts)} 个帖子", progress=100)
+            posts = normalize_batch(posts, "reddit")
             self.q.put({"type": "result", "tweets": posts})
 
             # ---- 深度提取 ----
@@ -918,6 +925,7 @@ class RedditWorker(threading.Thread):
                         except Exception as e:
                             self.log(f"     → 失败: {e}", "warn")
                     self.log("", progress=0)
+                    posts = normalize_batch(posts, "reddit")
                     self.q.put({"type": "result", "tweets": posts})
 
                 if flags.get("profile", False):
@@ -941,6 +949,7 @@ class RedditWorker(threading.Thread):
                     for p in posts:
                         if p.get("author_handle") in profile_cache:
                             p["profile"] = profile_cache[p["author_handle"]]
+                    posts = normalize_batch(posts, "reddit")
                     self.q.put({"type": "result", "tweets": posts})
 
         finally:
@@ -1801,7 +1810,7 @@ class ConsoleApp:
         self._stop_forwarder()
 
     def _populate_results(self, tweets: list[dict], update_cache: bool = True):
-        """将推文数据填入表格。"""
+        """将归一化后的数据填入表格。"""
         if update_cache:
             self.tweets_cache = tweets
             self.tweets_all = list(tweets)
@@ -1813,24 +1822,24 @@ class ConsoleApp:
             visible = [t for t in tweets if t.get("label") == filter_label]
 
         self.tree.delete(*self.tree.get_children())
-        is_youtube = self.platform_var.get() == "YouTube"
-        for i, t in enumerate(visible):
-            text_preview = t.get("tweet_text", "")[:70].replace("\n", " ")
-            author = f"@{t.get('author_handle', '?')}"
-            img_count = len(t.get("images", []) or [])
-            comment_count = len(t.get("comments", []) or [])
-            label = t.get("label", "")
+        for i, item in enumerate(visible):
+            text_preview = item.get("content", {}).get("title", "")[:70].replace("\n", " ")
+            author = f"@{item.get('author', '?')}"
+            meta = item.get("meta", {})
+            img_count = len(meta.get("images", []) or [])
+            comment_count = len(item.get("comments", []) or [])
+            label = item.get("label", "")
 
-            if is_youtube:
+            if item.get("platform") == "youtube":
                 # YouTube: 图=空, 评=评论数, 赞=播放, 转=点赞, 回=时长
-                duration = t.get("duration", 0) or 0
+                duration = meta.get("duration", 0) or 0
                 duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
                 self.tree.insert("", tk.END, values=(
                     i + 1, author, text_preview,
                     "",
                     comment_count or "",
-                    t.get("view_count", 0),
-                    t.get("likes", 0),
+                    meta.get("views", 0),
+                    meta.get("likes", 0),
                     duration_str,
                     label,
                 ))
@@ -1841,9 +1850,9 @@ class ConsoleApp:
                     text_preview,
                     f"🖼{img_count}" if img_count else "",
                     comment_count or "",
-                    t.get("likes", 0),
-                    t.get("retweets", 0),
-                    t.get("replies", 0),
+                    meta.get("likes", 0),
+                    meta.get("retweets", 0),
+                    meta.get("replies", 0),
                     label,
                 ))
 
@@ -1881,41 +1890,44 @@ class ConsoleApp:
             visible = [t for t in self.tweets_all if t.get("label") == filter_label]
         if idx < len(visible):
             t = visible[idx]
-            handle = t.get('author_handle', '?')
+            handle = t.get('author', '?')
             name = t.get('author_name', '?')
-            is_youtube = bool(t.get('description') or t.get('duration') or t.get('view_count'))
+            platform = t.get('platform', '')
+            is_youtube = platform == "youtube"
+            meta = t.get("meta", {})
+            content = t.get("content", {})
 
             if is_youtube:
                 # YouTube 详情
-                views = t.get('view_count', 0)
-                duration = t.get('duration', 0)
+                views = meta.get("views", 0)
+                duration = meta.get("duration", 0)
                 mins = duration // 60
                 secs = duration % 60
-                tags = t.get('tags', [])
-                categories = t.get('categories', [])
+                tags = meta.get("tags", [])
+                categories = meta.get("categories", [])
 
                 text_parts = [
-                    f"🎬 {t.get('tweet_text', '')}",
+                    f"🎬 {content.get('title', '')}",
                     f"频道: {name} ({handle})",
-                    f"视频ID: {t.get('tweet_id', '?')}",
-                    f"播放: {views:,}  点赞: {t.get('likes', 0):,}  评论: {t.get('replies', 0):,}  时长: {mins}:{secs:02d}",
+                    f"视频ID: {t.get('id', '?')}",
+                    f"播放: {views:,}  点赞: {meta.get('likes', 0):,}  评论: {meta.get('replies', 0):,}  时长: {mins}:{secs:02d}",
                 ]
-                if t.get('webpage_url'):
-                    text_parts.append(f"链接: {t['webpage_url']}")
+                if meta.get("url"):
+                    text_parts.append(f"链接: {meta['url']}")
                 if tags:
                     text_parts.append(f"标签: {', '.join(tags[:10])}")
                 if categories:
                     text_parts.append(f"分类: {', '.join(categories)}")
-                if t.get('description'):
+                if content.get("body"):
                     text_parts.append(f"{'─' * 50}")
                     text_parts.append(f"摘要:")
-                    text_parts.append(t['description'][:500])
+                    text_parts.append(content['body'][:500])
             else:
                 text_parts = [
                     f"作者: @{handle} ({name})",
-                    f"推文ID: {t.get('tweet_id', '?')}",
-                    f"时间: {t.get('timestamp', '?')}",
-                    f"点赞: {t.get('likes', 0)}  转发: {t.get('retweets', 0)}  回复: {t.get('replies', 0)}",
+                    f"ID: {t.get('id', '?')}",
+                    f"时间: {meta.get('timestamp', '?')}",
+                    f"点赞: {meta.get('likes', 0)}  转发: {meta.get('retweets', 0)}  回复: {meta.get('replies', 0)}",
                 ]
 
             # 作者主页信息 (仅 Twitter/Reddit)
@@ -1935,14 +1947,15 @@ class ConsoleApp:
                     if profile.get("website"):
                         text_parts.append(f"  网站: {profile.get('website', '')}")
 
-            # 推文正文 (Twitter/Reddit)
+            # 正文内容 (Twitter/Reddit)
             if not is_youtube:
                 text_parts.append(f"{'─' * 50}")
-                text_parts.append(f"📝 推文内容:")
-                text_parts.append(t.get('tweet_text', '(无内容)'))
+                text_parts.append(f"📝 内容:")
+                body = content.get("title", "") or "(无内容)"
+                text_parts.append(body)
 
                 # 图片
-                images = t.get("images") or []
+                images = meta.get("images") or []
                 if images:
                     text_parts.append(f"{'─' * 50}")
                     text_parts.append(f"🖼 图片 ({len(images)} 张):")
@@ -1958,10 +1971,9 @@ class ConsoleApp:
                     cl = c.get('label', '')
                     cl_icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌"}.get(cl, "")
                     text_parts.append(
-                        f"  [{ci+1}] {cl_icon} @{c.get('commenter_handle','?')}"
-                        f" ({c.get('commenter_name','?')}):"
+                        f"  [{ci+1}] {cl_icon} @{c.get('author','?')}:"
                     )
-                    text_parts.append(f"      {c.get('text','')[:200]}")
+                    text_parts.append(f"      {c.get('content','')[:200]}")
                     if c.get('timestamp'):
                         text_parts.append(f"      {c['timestamp']} | 赞:{c.get('likes',0)}")
 
@@ -1973,7 +1985,7 @@ class ConsoleApp:
             self.detail_text.config(state=tk.DISABLED)
 
     def _export_json(self):
-        """导出结果为 JSON 文件。"""
+        """导出归一化结果为 JSON 文件。"""
         if not self.tweets_cache:
             messagebox.showwarning("提示", "没有可导出的结果")
             return
@@ -1981,22 +1993,23 @@ class ConsoleApp:
             title="导出 JSON",
             defaultextension=".json",
             filetypes=[("JSON 文件", "*.json")],
-            initialfile=f"twitter_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            initialfile=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
         )
         if not path:
             return
         record = {
             "search_term": self.search_var.get(),
+            "platform": self.platform_var.get().lower(),
             "extracted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "count": len(self.tweets_cache),
-            "tweets": self.tweets_cache,
+            "items": self.tweets_cache,
         }
         Path(path).write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
         self._append_log(f"已导出: {path}", "success")
         messagebox.showinfo("提示", f"已导出到:\n{path}")
 
     def _llm_filter(self):
-        """调用 LLM 过滤模块。"""
+        """批量 LLM 过滤 — 一次 API 调用分类全部，失败回退逐条。"""
         if not self.tweets_cache:
             messagebox.showwarning("提示", "没有可过滤的结果")
             return
@@ -2012,7 +2025,7 @@ class ConsoleApp:
                 break
             messagebox.showwarning("提示", "过滤目标不能为空，请输入筛选条件。")
 
-        self._append_log("正在调用 DeepSeek 进行 LLM 过滤...")
+        self._append_log("正在调用 DeepSeek 进行批量 LLM 过滤...")
         self.status_var.set("LLM 过滤中...")
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
@@ -2020,7 +2033,6 @@ class ConsoleApp:
 
         def _run_filter():
             try:
-                # 优先读环境变量(可由 .env 提供),其次读本地 key 文件
                 api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
                 if not api_key:
                     try:
@@ -2032,39 +2044,85 @@ class ConsoleApp:
                     self.msg_queue.put({"type": "llm_done"})
                     return
 
-                tweets = self.tweets_cache
-                labeled = []
+                items = self.tweets_cache  # 已经是归一化格式
                 counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}
+                labels = [""] * len(items)
 
-                for i, t in enumerate(tweets):
-                    # 响应停止按钮
+                # 第一阶段: 批量调用
+                try:
+                    prompt = build_unified_batch_prompt(items, goal)
+                    raw = call_deepseek(
+                        [
+                            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        api_key=api_key,
+                        max_tokens=len(items) * 15 + 20,
+                        timeout=60,
+                        retries=1,
+                    )
+                    from _llm import parse_llm_json
+                    parsed = parse_llm_json(raw)
+                    if isinstance(parsed, list) and len(parsed) == len(items):
+                        labels = [normalize_label(str(x)) for x in parsed]
+                        self.msg_queue.put({"type": "log", "text": f"  批量分类成功: {len(labels)} 条", "level": "info"})
+                    else:
+                        self.msg_queue.put({"type": "log", "text": "  ⚠️ 批量返回长度不匹配, 回退逐条", "level": "warn"})
+                except Exception as e:
+                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ 批量分类异常: {e}, 回退逐条", "level": "warn"})
+
+                # 第二阶段: 逐条兜底
+                for i, item in enumerate(items):
                     if self.stop_event.is_set():
-                        self.msg_queue.put({"type": "log", "text": "LLM 过滤已被用户停止", "level": "warn"})
                         break
-
-                    # —— 推文分类(带重试) ——
-                    prompt = build_classify_prompt(t, goal)
+                    if labels[i]:
+                        continue
                     try:
-                        raw = call_deepseek(
+                        # 将归一化 item 转回旧格式供 build_classify_prompt 使用
+                        fallback_item = {
+                            "author_handle": item.get("author", ""),
+                            "author_name": item.get("author_name", ""),
+                            "tweet_text": item.get("content", {}).get("title", "")[:500],
+                            "likes": item.get("meta", {}).get("likes", 0),
+                            "replies": item.get("meta", {}).get("replies", 0),
+                            "view_count": item.get("meta", {}).get("views", 0),
+                            "profile": item.get("profile"),
+                            "comments": [
+                                {"commenter_handle": c.get("author", ""),
+                                 "text": c.get("content", "")}
+                                for c in item.get("comments", [])[:10]
+                            ],
+                        }
+                        raw_item = call_deepseek(
                             [
                                 {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                                {"role": "user", "content": prompt},
+                                {"role": "user", "content": build_classify_prompt(fallback_item, goal)},
                             ],
                             api_key=api_key, max_tokens=10, timeout=30, retries=1,
                         )
-                        label = normalize_label(raw)
+                        labels[i] = normalize_label(raw_item)
                     except Exception as e:
-                        self.msg_queue.put({"type": "log", "text": f"  [{i+1}] API 调用失败(已重试): {e}", "level": "warn"})
-                        label = "ERROR"
+                        self.msg_queue.put({"type": "log", "text": f"  [{i+1}] API 调用失败: {e}", "level": "warn"})
+                        labels[i] = "ERROR"
+
+                # 应用标签到 items
+                labeled = []
+                for i, item in enumerate(items):
+                    label = labels[i]
                     counts[label] = counts.get(label, 0) + 1
+                    item["label"] = label
 
-                    t_label = dict(t)
-                    t_label["label"] = label
-
-                    # —— 评论区批量分类(1 次 API,带重试) ——
-                    comments = t_label.get("comments") or []
+                    # 评论区也批量分类
+                    comments = item.get("comments") or []
                     if comments:
-                        batch_prompt = build_comment_batch_prompt(comments, t_label, goal)
+                        batch_prompt = build_comment_batch_prompt(
+                            [{"commenter_handle": c.get("author", ""),
+                              "text": c.get("content", "")}
+                             for c in comments],
+                            {"author_handle": item.get("author", ""),
+                             "tweet_text": item.get("content", {}).get("title", "")},
+                            goal,
+                        )
                         try:
                             c_raw = call_deepseek(
                                 [
@@ -2083,22 +2141,18 @@ class ConsoleApp:
                             c_counts[cl] = c_counts.get(cl, 0) + 1
                         self.msg_queue.put({"type": "log", "text": f"    评论区: {c_counts['TARGET']} 目标 / {c_counts['AD']} 广告 / {c_counts['IRRELEVANT']} 无关", "level": "info"})
 
-                    labeled.append(t_label)
+                    labeled.append(item)
                     icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌", "ERROR": "⚠️"}.get(label, "?")
-                    self.msg_queue.put({"type": "log", "text": f"  [{i+1}] {icon} {label} @{t.get('author_handle', '?')}", "level": "info"})
+                    self.msg_queue.put({"type": "log", "text": f"  [{i+1}] {icon} {label} @{item.get('author', '?')}", "level": "info"})
 
-                # 区分正常完成和用户中断
                 if self.stop_event.is_set():
-                    self.msg_queue.put({"type": "log", "text": f"已中断: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关 (仅处理 {len(labeled)}/{len(tweets)} 条)", "level": "warn"})
+                    self.msg_queue.put({"type": "log", "text": f"已中断: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关 (仅处理 {len(labeled)}/{len(items)} 条)", "level": "warn"})
                 else:
                     self.msg_queue.put({"type": "log", "text": f"过滤完成: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关", "level": "success"})
 
-                # 已处理的部分结果也推送到 UI
                 if labeled:
                     self.msg_queue.put({"type": "result", "tweets": labeled})
 
-            except FileNotFoundError:
-                self.msg_queue.put({"type": "log", "text": "错误: 未找到 API Key (~/.cloakbrowser_deepseek_key)", "level": "error"})
             except Exception as e:
                 self.msg_queue.put({"type": "log", "text": f"LLM 过滤失败: {e}", "level": "error"})
             finally:
