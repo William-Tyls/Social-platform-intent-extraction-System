@@ -54,7 +54,11 @@ cp tools/.env.example tools/.env
 #   DEEPSEEK_API_KEY=xxx      # LLM 过滤需要
 #   CB_TWITTER_PROXY=xxx      # Twitter/Reddit 需要
 
-# 3. 启动控制台
+# 3. 配置 GUI (config.json 被 .gitignore 忽略, 需要手动复制模板)
+cp tools/config.example.json tools/config.json
+# 按需修改方案/账号/代理/指纹配置, 详见 config.example.json 内注释
+
+# 4. 启动控制台
 python tools/console.py
 ```
 
@@ -151,7 +155,7 @@ tools/
 
 | 层级 | 优化项 | 改动 |
 |---|---|---|
-| **指纹安全性** | CSPRNG 随机种子 | `random.randint` (MT19937) → `secrets.randbelow`，消除指纹序列可预测性 |
+| **指纹安全性** | CSPRNG 随机种子 | Python: `random.randint` (MT19937) → `secrets.randbelow`；`random.random` → `rand_unit` (SystemRandom)，涵盖同步+异步 mouse/scroll 模块，消除指纹序列可预测性 |
 | | 延迟加载 | `js/config.ts` import 时不再同步读取 `package.json`，减小冷启动指纹面 |
 | **CreepJS 31%→0%** | API polyfill 修正 | 旧 polyfill 注入目标错误 (`ServiceWorkerRegistration.prototype.index` 等)。通过逆向 `creep.js` 源码定位到真实检测点 → 修正为 `window.ContentIndex`、`window.ContactsManager`、`NetworkInformation.prototype.downlinkMax` |
 | | 颜色信号消除 | `color_scheme="dark"` 消除 `prefersLightColor`；CSS 注入 `background-color: inherit` 消除 `hasKnownBgColor` |

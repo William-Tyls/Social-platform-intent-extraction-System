@@ -1,0 +1,119 @@
+{
+  "_comment": "复制本文件为 config.json: cp tools/config.example.json tools/config.json 。config.json 已被 .gitignore 忽略，不会提交。",
+  "accounts": [
+    {
+      "name": "账号1",
+      "email": "your_email@example.com",
+      "username": "your_twitter_username",
+      "password": "",
+      "profile_path": "./twitter-profiles/account1"
+    }
+  ],
+  "proxies": [
+    {
+      "name": "直连",
+      "server": null
+    },
+    {
+      "name": "示例代理",
+      "server": "socks5://127.0.0.1:11080"
+    }
+  ],
+  "fingerprints": [
+    {
+      "name": "默认模板",
+      "timezone": "Asia/Shanghai",
+      "locale": "zh-CN",
+      "color_scheme": "light",
+      "viewport_width": 1440,
+      "viewport_height": 900,
+      "webrtc_ip": null
+    },
+    {
+      "name": "自适应 (auto)",
+      "timezone": null,
+      "locale": null,
+      "color_scheme": "dark",
+      "viewport_width": "0",
+      "viewport_height": "0",
+      "webrtc_ip": "auto"
+    }
+  ],
+  "reddit": {
+    "subreddit": "all",
+    "sort": "relevance",
+    "time": "all",
+    "request_delay": 2.0
+  },
+  "search": {
+    "default_term": "搜索关键词",
+    "max_tweets": 10,
+    "history": []
+  },
+  "bundles": [],
+  "extractions": [
+    {
+      "name": "仅基础",
+      "author_name": true,
+      "author_handle": true,
+      "tweet_text": true,
+      "timestamp": true,
+      "tweet_id": true,
+      "likes": true,
+      "retweets": true,
+      "replies": true,
+      "images": false,
+      "comments": false,
+      "profile": false,
+      "max_comments_per_tweet": 10
+    },
+    {
+      "name": "含评论",
+      "author_name": true,
+      "author_handle": true,
+      "tweet_text": true,
+      "timestamp": true,
+      "tweet_id": true,
+      "likes": true,
+      "retweets": true,
+      "replies": true,
+      "images": false,
+      "comments": true,
+      "profile": false,
+      "max_comments_per_tweet": 10
+    },
+    {
+      "name": "含作者信息",
+      "author_name": true,
+      "author_handle": true,
+      "tweet_text": true,
+      "timestamp": true,
+      "tweet_id": true,
+      "likes": true,
+      "retweets": true,
+      "replies": true,
+      "images": false,
+      "comments": false,
+      "profile": true,
+      "max_comments_per_tweet": 0
+    },
+    {
+      "name": "完整提取",
+      "author_name": true,
+      "author_handle": true,
+      "tweet_text": true,
+      "timestamp": true,
+      "tweet_id": true,
+      "likes": true,
+      "retweets": true,
+      "replies": true,
+      "images": true,
+      "comments": true,
+      "profile": true,
+      "max_comments_per_tweet": 10
+    }
+  ],
+  "youtube": {
+    "comments_per_video": 10
+  }
+}
