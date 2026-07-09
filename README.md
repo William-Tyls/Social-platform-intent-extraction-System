@@ -62,20 +62,20 @@ python tools/console.py
 
 ```bash
 # YouTube: 搜索 100 个视频 + 每条 10 个评论
-python tools/apps/youtube_run.py "World Cup" -n 100 -c 10
+python tools/apps/youtube_run.py "{搜索关键词}" -n 100 -c 10
 
 # YouTube: 直接提取已知视频
-python tools/apps/youtube_run.py --ids dQw4w9WgXcQ -c 20
+python tools/apps/youtube_run.py --ids "{视频ID}" -c 20
 
 # Twitter: 搜索推文 (需先登录 + 启动代理)
-python tools/apps/twitter_test.py               # 1. 登录建立会话
-python tools/apps/socks5_forwarder.py            # 2. 启动代理转发
-python tools/apps/twitter_search_test.py "关键词"  # 3. 搜索
+python tools/apps/twitter_test.py                 # 1. 登录建立会话
+python tools/apps/socks5_forwarder.py              # 2. 启动代理转发
+python tools/apps/twitter_search_test.py "{关键词}"  # 3. 搜索
 
 # Reddit: 同理, 通过 console.py 选择平台后搜索
 
 # LLM 过滤: 对采集结果分类
-python tools/apps/llm_filter.py results.json --goal "筛选想购买世界杯门票的用户"
+python tools/apps/llm_filter.py "{结果文件.json}" --goal "{筛选目标}"
 ```
 
 ## 目录结构
