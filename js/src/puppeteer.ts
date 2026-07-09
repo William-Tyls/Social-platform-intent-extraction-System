@@ -10,18 +10,33 @@ import { IGNORE_DEFAULT_ARGS } from "./config.js";
 import { buildArgs } from "./args.js";
 import { ensureBinary } from "./download.js";
 import { isSocksProxy, normalizeHttpStringUrl, parseProxyUrl, reconstructHttpUrl, resolveProxyConfig, supportsHttpProxyInlineAuth } from "./proxy.js";
-import { maybeResolveGeoip, resolveWebrtcArgs } from "./geoip.js";
+import { maybeResolveGeoip } from "./geoip.js";
 import { seedWidevineHint } from "./widevine.js";
 
-/** Resolve binary path, geoip, webrtc, and build final Chrome args. */
+/** Resolve binary path, geoip, and build final Chrome args.
+ *  Merges WebRTC resolution into the same probe so the proxy exit IP is
+ *  only resolved once (mirrors resolveWebrtcAndGeoArgs in playwright.ts). */
 async function resolveArgs(options: LaunchOptions): Promise<{ binaryPath: string; args: string[] }> {
   const binaryPath = process.env.CLOAKBROWSER_BINARY_PATH || (await ensureBinary());
   const { exitIp, ...resolved } = (await maybeResolveGeoip(options)) ?? {};
-  let resolvedArgs = (await resolveWebrtcArgs(options)) ?? options.args;
 
-  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
-    resolvedArgs = [...(resolvedArgs ?? []), `--fingerprint-webrtc-ip=${exitIp}`];
+  // Resolve --fingerprint-webrtc-ip=auto using the exitIp we already have
+  // (avoids a second resolveExitIp network probe through the proxy).
+  let resolvedArgs = options.args ? [...options.args] : undefined;
+  if (resolvedArgs) {
+    const idx = resolvedArgs.findIndex(a => a === "--fingerprint-webrtc-ip=auto");
+    if (idx !== -1) {
+      if (exitIp) {
+        resolvedArgs[idx] = `--fingerprint-webrtc-ip=${exitIp}`;
+      } else {
+        resolvedArgs.splice(idx, 1);
+      }
+    }
   }
+  if (exitIp && !(resolvedArgs ?? []).some(a => a.startsWith("--fingerprint-webrtc-ip"))) {
+    (resolvedArgs ??= []).push(`--fingerprint-webrtc-ip=${exitIp}`);
+  }
+
   return { binaryPath, args: buildArgs({ ...options, ...resolved, args: resolvedArgs }) };
 }
 

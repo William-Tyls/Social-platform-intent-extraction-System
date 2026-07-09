@@ -691,47 +691,47 @@ class YoutubeWorker(threading.Thread):
         # ---- 去重过滤 ----
         dedup_db = os.environ.get("YOUTUBE_DEDUP_DB", "youtube_dedup.db")
         store = DedupStore(dedup_db)
-        original_count = len(video_ids)
-        video_ids = store.filter_new(video_ids)
-        skipped = original_count - len(video_ids)
+        try:
+            original_count = len(video_ids)
+            video_ids = store.filter_new(video_ids)
+            skipped = original_count - len(video_ids)
 
-        if not video_ids:
-            self.log("所有视频已处理过(去重)", "warn")
+            if not video_ids:
+                self.log("所有视频已处理过(去重)", "warn")
+                self.q.put({"type": "done", "success": True})
+                return
+
+            if skipped:
+                self.log(f"  去重过滤: 跳过 {skipped} 个已处理, 剩余 {len(video_ids)} 个新视频")
+
+            # ---- 阶段 2: yt-dlp 提取 ----
+            self.log("=" * 50)
+            self.log(f"阶段 2/2: yt-dlp 提取 {len(video_ids)} 个视频")
+            if self.comments_per_video > 0:
+                self.log(f"  (每个视频 {self.comments_per_video} 条评论)")
+
+            extractor = YtDlpExtractor()
+            results_raw = extractor.extract(
+                video_ids,
+                max_comments_per_video=self.comments_per_video,
+                on_progress=lambda cur, tot, vid: self._on_progress(cur, tot, vid),
+            )
+
+            if self.stop.is_set():
+                return
+
+            # 转换为通用格式
+            tweets = [self._to_tweet_format(v) for v in results_raw]
+
+            self.log(f"提取完成: {len(tweets)} 个视频")
+
+            # 存入去重
+            store.batch_mark_seen([t["tweet_id"] for t in tweets])
+
+            self.q.put({"type": "result", "tweets": tweets})
             self.q.put({"type": "done", "success": True})
+        finally:
             store.close()
-            return
-
-        if skipped:
-            self.log(f"  去重过滤: 跳过 {skipped} 个已处理, 剩余 {len(video_ids)} 个新视频")
-
-        # ---- 阶段 2: yt-dlp 提取 ----
-        self.log("=" * 50)
-        self.log(f"阶段 2/2: yt-dlp 提取 {len(video_ids)} 个视频")
-        if self.comments_per_video > 0:
-            self.log(f"  (每个视频 {self.comments_per_video} 条评论)")
-
-        extractor = YtDlpExtractor()
-        results_raw = extractor.extract(
-            video_ids,
-            max_comments_per_video=self.comments_per_video,
-            on_progress=lambda cur, tot, vid: self._on_progress(cur, tot, vid),
-        )
-
-        if self.stop.is_set():
-            store.close()
-            return
-
-        # 转换为通用格式
-        tweets = [self._to_tweet_format(v) for v in results_raw]
-
-        self.log(f"提取完成: {len(tweets)} 个视频")
-
-        # 存入去重 + 关闭
-        store.batch_mark_seen([t["tweet_id"] for t in tweets])
-        store.close()
-
-        self.q.put({"type": "result", "tweets": tweets})
-        self.q.put({"type": "done", "success": True})
 
     def _on_progress(self, current: int, total: int, video_id: str):
         pct = int(current / max(total, 1) * 100)
@@ -1585,8 +1585,15 @@ class ConsoleApp:
         if self.forwarder_proc:
             proc = self.forwarder_proc
             self.forwarder_proc = None
-            # 后台静默终止，避免阻塞 UI 线程
-            threading.Thread(target=proc.terminate, daemon=True).start()
+            # 后台终止并等待退出，避免僵尸进程
+            def _cleanup():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            threading.Thread(target=_cleanup, daemon=True).start()
 
     def _resolve_bundle(self):
         """从选中的方案解析出账号、代理、指纹、提取四组件。"""
@@ -1864,6 +1871,8 @@ class ConsoleApp:
         if not sel:
             return
         values = self.tree.item(sel[0], "values")
+        if not values:
+            return
         idx = int(values[0]) - 1
         # 在当前可见列表中找
         filter_label = self.filter_var.get()

@@ -10,11 +10,18 @@
     # ... 提取数据 ...
     store.batch_mark_seen(processed_ids)        # 标记已处理
     store.close()
+
+    # 或使用 with 语句自动关闭
+    with DedupStore("youtube.db") as store:
+        new_ids = store.filter_new(video_ids)
+        ...
+        store.batch_mark_seen(processed_ids)
 """
 
 from __future__ import annotations
 
 import sqlite3
+from typing import Self
 
 
 class DedupStore:
@@ -56,17 +63,21 @@ class DedupStore:
         self, ids: list[str], item_type: str = "video", source: str = "unknown"
     ):
         """批量标记已处理。重复项静默忽略。"""
-        for vid in ids:
-            try:
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO seen(id, type, source) VALUES(?, ?, ?)",
-                    (vid, item_type, source),
-                )
-            except sqlite3.IntegrityError:
-                pass
+        if not ids:
+            return
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO seen(id, type, source) VALUES(?, ?, ?)",
+            [(vid, item_type, source) for vid in ids],
+        )
         self.conn.commit()
 
     def close(self):
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()

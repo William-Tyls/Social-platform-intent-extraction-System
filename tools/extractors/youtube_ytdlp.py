@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 
 # ------------------------------------------------------------------
@@ -51,6 +54,9 @@ def _classify_error(stderr_text: str) -> str:
     lower = stderr_text.lower()
     for a, label in _ERROR_PATTERNS:
         if a not in lower:
+            continue
+        # 单字母关键词要求词边界 — 避免 "live" 匹配 "delivery" 等
+        if len(a) <= 6 and a.isalpha() and not re.search(r'\b' + re.escape(a) + r'\b', lower):
             continue
         # 检查是否需要同时满足第二个条件
         if a in _AND_CONDITIONS:
@@ -92,7 +98,7 @@ class YtDlpExtractor:
         try:
             subprocess.run([sys.executable, "-m", "yt_dlp", "--version"],
                            capture_output=True, timeout=5)
-            return sys.executable + " -m yt_dlp"
+            return f"{shlex.quote(sys.executable)} -m yt_dlp"
         except Exception:
             pass
         raise RuntimeError("找不到 yt-dlp。pip install yt-dlp")
@@ -104,8 +110,8 @@ class YtDlpExtractor:
         video_ids: list[str],
         max_comments_per_video: int = 10,
         comment_sort: str = "newest",
-        on_progress: callable = None,
-        on_error: callable = None,
+        on_progress: Callable | None = None,
+        on_error: Callable | None = None,
         verbose: bool = True,
     ) -> list[dict]:
         """批量提取视频数据。
@@ -174,7 +180,7 @@ class YtDlpExtractor:
 
     def _build_cmd(self, tmpdir: str, max_comments: int, comment_sort: str) -> list[str]:
         """构建 yt-dlp 子进程命令。"""
-        cmd = self.ytdlp_path.split() if " " in self.ytdlp_path else [self.ytdlp_path]
+        cmd = shlex.split(self.ytdlp_path) if " " in self.ytdlp_path else [self.ytdlp_path]
 
         cmd += [
             "--write-comments" if max_comments > 0 else "--no-write-comments",

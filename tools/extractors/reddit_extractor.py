@@ -206,17 +206,18 @@ def extract_profile(page, username: str) -> dict | None:
     """访问 old.reddit.com 用户主页提取信息。
 
     需要先调用 page.goto(f"{BASE_URL}/user/{username}") 导航到主页。
-    返回 dict 含 link_karma, comment_karma, join_date 等,
-    以及兼容控制台详情面板的 followers/following/bio 映射。
+    返回 dict 含 link_karma, comment_karma, join_date 等，
+    以及兼容控制台详情面板的 followers/following/bio 字段
+    （old.reddit.com 不直接暴露这些，设为空占位）。
     """
     if username == "[deleted]":
         return None
 
     raw = page.evaluate(_PROFILE_EXTRACT_JS)
     if raw:
-        raw["followers"] = raw["link_karma"]
-        raw["following"] = raw["comment_karma"]
-        raw["bio"] = f"发帖karma:{raw['link_karma']} | 评论karma:{raw['comment_karma']}"
+        raw.setdefault("bio", "")
+        raw.setdefault("followers", 0)
+        raw.setdefault("following", 0)
     return raw
 
 

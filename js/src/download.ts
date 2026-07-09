@@ -326,7 +326,12 @@ async function downloadFile(url: string, dest: string): Promise<void> {
       const { done, value } = await reader.read();
       if (done) break;
 
-      fileStream.write(value);
+      // Handle backpressure: if the internal buffer is full, pause the
+      // readable stream until the file stream drains to avoid data loss
+      // on slow disks or under high I/O load.
+      if (!fileStream.write(value)) {
+        await new Promise<void>((resolve) => fileStream.once("drain", resolve));
+      }
       downloaded += value.length;
 
       if (total > 0) {
@@ -352,11 +357,13 @@ async function downloadFile(url: string, dest: string): Promise<void> {
     const sizeMB = Math.floor(fs.statSync(dest).size / (1024 * 1024));
     console.log(`[cloakbrowser] Download complete: ${sizeMB} MB`);
   } catch (err) {
-    // Ensure file stream is destroyed on error to release the handle
+    // Ensure file stream is destroyed on error to release the handle.
+    // Register the close listener BEFORE destroy() — otherwise destroy()
+    // may emit 'close' synchronously and the listener would be missed.
     if (!fileStream.destroyed) {
       await new Promise<void>((resolve) => {
-        fileStream.destroy();
         fileStream.on("close", () => resolve());
+        fileStream.destroy();
         // Safety timeout in case close never fires
         setTimeout(resolve, 2000);
       });

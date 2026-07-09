@@ -7,10 +7,9 @@ Mirrors mouse.py but uses ``await`` for all Playwright calls and
 from __future__ import annotations
 
 import math
-import random
 from typing import Any, Protocol
 
-from .config import HumanConfig, rand, rand_range, rand_int_range, rand_lognormal, async_sleep_ms
+from .config import HumanConfig, rand, rand_range, rand_int_range, rand_lognormal, rand_unit, async_sleep_ms
 from .mouse import Point, _ease_in_out, _bezier, _random_control_points, click_target  # noqa: reuse pure math
 
 
@@ -45,8 +44,8 @@ async def async_human_move(
         pt = _bezier(start, cp1, cp2, end, eased_t)
 
         wobble_amp = math.sin(math.pi * progress) * cfg.mouse_wobble_max
-        wx = pt.x + (random.random() - 0.5) * 2 * wobble_amp
-        wy = pt.y + (random.random() - 0.5) * 2 * wobble_amp
+        wx = pt.x + (rand_unit() - 0.5) * 2 * wobble_amp
+        wy = pt.y + (rand_unit() - 0.5) * 2 * wobble_amp
 
         await raw.move(round(wx), round(wy))
 
@@ -59,14 +58,14 @@ async def async_human_move(
                 await async_sleep_ms(rand_range(cfg.mouse_burst_pause))
             burst_counter = 0
 
-    if random.random() < cfg.mouse_overshoot_chance:
+    if rand_unit() < cfg.mouse_overshoot_chance:
         overshoot_dist = rand_range(cfg.mouse_overshoot_px)
         angle = math.atan2(end_y - start_y, end_x - start_x)
         await raw.move(round(end_x + math.cos(angle) * overshoot_dist),
                        round(end_y + math.sin(angle) * overshoot_dist))
         await async_sleep_ms(rand(30, 70))
-        await raw.move(round(end_x + (random.random() - 0.5) * 4),
-                       round(end_y + (random.random() - 0.5) * 4))
+        await raw.move(round(end_x + (rand_unit() - 0.5) * 4),
+                       round(end_y + (rand_unit() - 0.5) * 4))
 
 
 async def async_human_click(raw: AsyncRawMouse, is_input: bool, cfg: HumanConfig) -> None:
@@ -83,8 +82,8 @@ async def async_human_idle(raw: AsyncRawMouse, seconds: float, cx: float, cy: fl
     end_time = _time.monotonic() + seconds
     x, y = cx, cy
     while _time.monotonic() < end_time:
-        dx = (random.random() - 0.5) * 2 * cfg.idle_drift_px
-        dy = (random.random() - 0.5) * 2 * cfg.idle_drift_px
+        dx = (rand_unit() - 0.5) * 2 * cfg.idle_drift_px
+        dy = (rand_unit() - 0.5) * 2 * cfg.idle_drift_px
         x += dx
         y += dy
         await raw.move(round(x), round(y))

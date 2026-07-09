@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 import math
-import random
 from typing import Any, Callable, Optional, Tuple
 
-from .config import HumanConfig, rand, rand_range, rand_int_range, rand_lognormal, sleep_ms
+from .config import HumanConfig, rand, rand_range, rand_int_range, rand_lognormal, rand_unit, sleep_ms
 from .mouse import RawMouse, human_move
 
 logger = logging.getLogger(__name__)
@@ -138,7 +137,7 @@ def human_scroll_into_view(
                 delta = rand_range(cfg.scroll_delta_base)
                 pause = rand_range(cfg.scroll_pause_fast)
 
-        delta *= 1 + (random.random() - 0.5) * 2 * cfg.scroll_delta_variance
+        delta *= 1 + (rand_unit() - 0.5) * 2 * cfg.scroll_delta_variance
         delta = round(delta) * direction
 
         _smooth_wheel(raw, delta, cfg)
@@ -149,10 +148,10 @@ def human_scroll_into_view(
         # Real users pause to read every few scrolls, and occasionally
         # scroll back a bit to re-read something.
         if cfg.read_pause_chance > 0 and i > 2 and i < total_clicks - 2:
-            if random.random() < cfg.read_pause_chance:
+            if rand_unit() < cfg.read_pause_chance:
                 read_delay = rand_range(cfg.read_pause_range)
                 sleep_ms(read_delay)
-            if random.random() < cfg.read_backscroll_chance:
+            if rand_unit() < cfg.read_backscroll_chance:
                 back_px = round(rand_range(cfg.read_backscroll_px))
                 _smooth_wheel(raw, -back_px * direction, cfg)
                 sleep_ms(rand(200, 500))
@@ -168,7 +167,7 @@ def human_scroll_into_view(
             break
 
     # Optional overshoot + correction
-    if random.random() < cfg.scroll_overshoot_chance:
+    if rand_unit() < cfg.scroll_overshoot_chance:
         overshoot_px = round(rand_range(cfg.scroll_overshoot_px)) * direction
         _smooth_wheel(raw, overshoot_px, cfg)
         sleep_ms(rand_range(cfg.scroll_settle_delay))

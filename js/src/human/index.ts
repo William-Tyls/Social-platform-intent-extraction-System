@@ -873,11 +873,15 @@ function patchSingleFrame(
 function* iterFrames(page: Page): Generator<Frame> {
   try {
     const mainFrame = page.mainFrame();
-    yield mainFrame;
-    for (const child of mainFrame.childFrames()) {
-      yield child;
-    }
+    yield* _iterFramesRecursive(mainFrame);
   } catch {}
+}
+
+function* _iterFramesRecursive(frame: Frame): Generator<Frame> {
+  yield frame;
+  for (const child of frame.childFrames()) {
+    yield* _iterFramesRecursive(child);
+  }
 }
 
 

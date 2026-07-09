@@ -409,10 +409,26 @@ function patchPage(page: Page, cfg: HumanConfig, cursor: CursorState): void {
   };
 
   // ==== focus ====
+  // Move cursor to the element then call programmatic focus — notably NOT
+  // humanClickFn, which would trigger onclick handlers, form submissions, and
+  // link navigations (stock Puppeteer page.focus never clicks).
   const humanFocusFn = async (selector: string) => {
-    if (!await isSelectorFocused(stealth, page, selector)) {
-      await humanClickFn(selector);
+    if (await isSelectorFocused(stealth, page, selector)) return;
+    await ensureCursorInit();
+    const callCfg = mergeConfig(cfg);
+    if (callCfg.idle_between_actions) {
+      await humanIdle(raw, cursor.x, cursor.y, callCfg);
     }
+    const { box, cursorX, cursorY } = await scrollToElement(
+      page, raw, selector, cursor.x, cursor.y, callCfg,
+    );
+    cursor.x = cursorX;
+    cursor.y = cursorY;
+    const target = clickTarget(box, false, callCfg);
+    await humanMove(raw, cursor.x, cursor.y, target.x, target.y, callCfg);
+    cursor.x = target.x;
+    cursor.y = target.y;
+    await originals.focus(selector);
   };
 
   // ==== tap ====
@@ -939,11 +955,15 @@ function patchSingleFrame(
 function* iterFrames(page: Page): Generator<Frame> {
   try {
     const mainFrame = page.mainFrame();
-    yield mainFrame;
-    for (const child of mainFrame.childFrames()) {
-      yield child;
-    }
+    yield* _iterFramesRecursive(mainFrame);
   } catch {}
+}
+
+function* _iterFramesRecursive(frame: Frame): Generator<Frame> {
+  yield frame;
+  for (const child of frame.childFrames()) {
+    yield* _iterFramesRecursive(child);
+  }
 }
 
 

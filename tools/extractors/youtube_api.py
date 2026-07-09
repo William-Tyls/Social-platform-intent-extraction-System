@@ -167,7 +167,9 @@ class YouTubeAPI:
         page_token = None
 
         while len(ids) < count:
-            batch = min(50, max(50, count - len(ids) + 10))
+            # maxResults capped at 50 (YouTube API limit); quota is per-request
+            # so there's no benefit to requesting fewer than 50
+            batch = 50
 
             params = {
                 "part": "snippet",
