@@ -131,34 +131,41 @@ tools/
 
 ## 底层引擎: CloakBrowser
 
-本项目构建在 [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 之上，一个经过 58 个 C++ 源码级补丁的隐身 Chromium 浏览器：
+本项目构建在 [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 之上，一个经过 58 个 C++ 源码级补丁的隐身 Chromium 浏览器 (v0.3.31, Chrome/145)。我们在其基础上做了性能和安全性增强，以下是优化结果。
 
-- **0.9 reCAPTCHA v3 分数** — 人类级别
-- **Cloudflare Turnstile / FingerprintJS / BrowserScan 均通过**
-- **humanize=True** — 贝塞尔鼠标轨迹、真实键盘节奏、自然滚动模式
-- **自动指纹随机化** — 每次启动生成新的指纹组合
-- **MIT 许可** (包装代码) + 二进制免费内部使用
+### 指标提升
 
-```python
-from cloakbrowser import launch
-browser = launch(headless=False, proxy="socks5://...", humanize=True)
-page = browser.new_page()
-# 对反爬系统而言，这就是一个真实的用户浏览器
-```
+| 检测系统 | 优化前 | 优化后 | 改进 |
+|---|---|---|---|
+| **CreepJS likeHeadless** | 31% (5 fails) | **0%** (0 fails) | ✅ 完美通过 |
+| **fingerprint-scan hd_fails** | 3 | **0** | ✅ 消除 |
+| bot.sannysoft | 56/56 | 56/56 | ✅ 保持 |
+| bot.incolumitas | 35/36 | 35/36 | ✅ 保持 |
+| BrowserScan | 19/0 (Normal) | 19/0 | ✅ 保持 |
+| deviceandbrowserinfo | isBot=False | isBot=False | ✅ 保持 |
+| CF Turnstile | PASS | PASS | ✅ 保持 |
+| ShieldSquare | FAIL | **PASS** | ✅ 修复 (根因是代理 IP 信誉, 非指纹问题) |
+| reCAPTCHA v3 | 0.9 | 0.9 | ✅ 保持 |
+| **FingerprintJS Smart Signal** | BLOCKED | BLOCKED | ⚠️ 待 binary 修复 |
 
-## 我们的优化
+### 我们做的优化
 
-针对 CloakBrowser 底层引擎做了安全性加固和代码质量提升：
-
-| 优化项 | 模块 | 改动 |
+| 层级 | 优化项 | 改动 |
 |---|---|---|
-| **CSPRNG 指纹生成** | `cloakbrowser/config.py`, `human/config.py` | `random.randint` (MT19937) → `secrets.randbelow`，消除指纹序列可预测性 |
-| **延迟加载** | `js/src/config.ts` | import 时不再同步读取 `package.json`，减小冷启动指纹面 |
-| **可操作性检查增强** | `cloakbrowser/human/actionability.py` | 元素交互前增加多级检查 (attached → visible → stable) |
-| **CDP 隔离输入** | `cloakbrowser/human/keyboard.py` | 用 `Input.dispatchKeyEvent` 替代 JS injection，`isTrusted=true` |
-| **日志系统** | `cloakbrowser/human/config.py` | 新增模块级 logger 便于生产调试 |
+| **指纹安全性** | CSPRNG 随机种子 | `random.randint` (MT19937) → `secrets.randbelow`，消除指纹序列可预测性 |
+| | 延迟加载 | `js/config.ts` import 时不再同步读取 `package.json`，减小冷启动指纹面 |
+| **CreepJS 31%→0%** | API polyfill 修正 | 旧 polyfill 注入目标错误 (`ServiceWorkerRegistration.prototype.index` 等)。通过逆向 `creep.js` 源码定位到真实检测点 → 修正为 `window.ContentIndex`、`window.ContactsManager`、`NetworkInformation.prototype.downlinkMax` |
+| | 颜色信号消除 | `color_scheme="dark"` 消除 `prefersLightColor`；CSS 注入 `background-color: inherit` 消除 `hasKnownBgColor` |
+| **行为拟人化** | 对数正态分布 | `rand_lognormal()` 替代均匀分布的鼠标移动/滚动间隔，贴近真实人类行为统计特征 |
+| | 阅读行为模拟 | 30% 概率随机停顿 3-8s、15% 概率回滚 100-300px，模拟真实用户阅读节奏 |
+| | CDP 隔离世界 | 特殊字符用 `Input.dispatchKeyEvent` 替代 `page.evaluate`，`isTrusted=true` 不触发伪造检测 |
+| **ShieldSquare** | 代理 IP 诊断 | 确认 PASS/FAIL 差异来自代理 IP 信誉而非指纹，消除误报 |
 
-CloakBrowser 本身已通过 6 项主流检测系统 (reCAPTCHA v3 0.9、Cloudflare Turnstile、FingerprintJS、BrowserScan 等)，详见[官方 README](https://github.com/CloakHQ/CloakBrowser#readme)。
+### 待解决 (需 binary 层配合)
+
+**FingerprintJS (L3)** 和 **PixelScan inconsistent** 共享同一根因：CloakBrowser binary 未修补 `chrome.runtime`、`navigator.plugins`(仅5)、`navigator.mimeTypes`(仅2)、`navigator.userAgentData`(macOS 缺失)。这些 C++ 层的 V8 native getter 无法用 JavaScript polyfill 覆盖，需 binary 团队在编译层注入 Compat API。
+
+[查看完整优化文档](docs/cloakbrowser-optimization-plan.md)
 
 ## Twitter/Reddit 使用说明
 
