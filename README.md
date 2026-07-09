@@ -1,6 +1,6 @@
 # Social Platform Intent Extraction System
 
-多平台社交数据意图提取系统 — 基于**优化后的** CloakBrowser 隐身浏览器构建，支持 **YouTube** / **Twitter/X** / **Reddit** 三大平台的用户内容批量采集和 LLM 智能过滤。
+多平台社交数据意图提取系统 — 基于优化后的 CloakBrowser 隐身浏览器构建，支持 **YouTube** / **Twitter/X** / **Reddit** 三大平台的用户内容批量采集和 LLM 智能过滤。
 
 ---
 
