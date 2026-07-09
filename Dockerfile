@@ -29,7 +29,7 @@ COPY js/ js/
 RUN cd js && npm install && npm run build
 
 # Examples
-COPY examples/ examples/
+COPY tools/ tools/
 
 # Pre-download stealth Chromium binary during build (not at runtime)
 # Remove welcome marker so users see it on first container run
