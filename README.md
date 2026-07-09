@@ -67,8 +67,12 @@ python tools/apps/youtube_run.py "World Cup" -n 100 -c 10
 # YouTube: 直接提取已知视频
 python tools/apps/youtube_run.py --ids dQw4w9WgXcQ -c 20
 
-# Twitter: 搜索推文
-python tools/apps/twitter_search_test.py "关键词"
+# Twitter: 搜索推文 (需先登录 + 启动代理)
+python tools/apps/twitter_test.py               # 1. 登录建立会话
+python tools/apps/socks5_forwarder.py            # 2. 启动代理转发
+python tools/apps/twitter_search_test.py "关键词"  # 3. 搜索
+
+# Reddit: 同理, 通过 console.py 选择平台后搜索
 
 # LLM 过滤: 对采集结果分类
 python tools/apps/llm_filter.py results.json --goal "筛选想购买世界杯门票的用户"
@@ -161,18 +165,6 @@ tools/
 **FingerprintJS (L3)** 和 **PixelScan inconsistent** 共享同一根因：CloakBrowser binary 未修补 `chrome.runtime`、`navigator.plugins`(仅5)、`navigator.mimeTypes`(仅2)、`navigator.userAgentData`(macOS 缺失)。这些 C++ 层的 V8 native getter 无法用 JavaScript polyfill 覆盖，需 binary 团队在编译层注入 Compat API。
 
 [查看完整优化文档](docs/cloakbrowser-optimization-plan.md)
-
-## Twitter/Reddit 使用说明
-
-1. 先运行登录脚本建立会话：
-   ```bash
-   python tools/apps/twitter_test.py
-   ```
-2. 启动 SOCKS5 代理转发器：
-   ```bash
-   python tools/apps/socks5_forwarder.py
-   ```
-3. 然后在 console.py 中选择平台和方案，开始搜索提取。
 
 ## License
 
