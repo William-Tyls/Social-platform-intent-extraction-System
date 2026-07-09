@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import load_env  # noqa: E402
 from _llm import (          # noqa: E402
-    build_classify_prompt, build_unified_batch_prompt,
+    build_classify_prompt,
     normalize_label, parse_llm_json,
 )
 from _normalize import normalize_batch  # noqa: E402
@@ -67,7 +67,7 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
 
     # 第一步: 批量
     try:
-        batch_prompt = build_unified_batch_prompt(tweets, goal)
+        batch_prompt = build_classify_prompt(tweets, goal)
         resp = client.chat.completions.create(
             model=model,
             messages=[
@@ -94,7 +94,7 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
                 model=model,
                 messages=[
                     {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                    {"role": "user", "content": build_classify_prompt(t, goal)},
+                    {"role": "user", "content": build_classify_prompt([t], goal)},
                 ],
                 temperature=0.1,
                 max_tokens=10,

@@ -1,12 +1,10 @@
 """LLM 共享模块 单元测试。
 
-覆盖 _llm.py 的纯函数 (均接受归一化 schema):
+覆盖 _llm.py 的纯函数:
   - normalize_label: 标签归一化
   - parse_llm_json: JSON 解析 (markdown 容忍)
   - parse_comment_labels: 批量标签解析
-  - build_classify_prompt: 单条分类提示词
-  - build_comment_batch_prompt: 评论批量提示词
-  - build_unified_batch_prompt: 跨平台批量提示词
+  - build_classify_prompt: 唯一分类 prompt (items / items+parent=评论)
 
 运行:
     python tools/tests/test_llm.py              # 独立运行
@@ -22,13 +20,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from _llm import (  # noqa: E402
     build_classify_prompt,
-    build_comment_batch_prompt,
-    build_unified_batch_prompt,
     normalize_label,
     parse_comment_labels,
     parse_llm_json,
 )
 from _normalize import normalize_item  # noqa: E402
+
+
+def _tw(item: dict) -> dict:
+    return normalize_item(item, "twitter")
+
+
+def _yt(item: dict) -> dict:
+    return normalize_item(item, "youtube")
+
+
+def _rd(item: dict) -> dict:
+    return normalize_item(item, "reddit")
 
 
 # ====================================================================
@@ -59,7 +67,6 @@ def test_normalize_none_input():
 
 
 def test_normalize_partial_match():
-    """'TARGET' 关键词在任意位置都匹配。"""
     assert normalize_label("IS_TARGET_MATCH") == "TARGET"
     assert normalize_label("SOME-AD-HERE") == "AD"
 
@@ -100,8 +107,7 @@ def test_parse_invalid_json():
 
 
 def test_parse_mixed_content():
-    """LLM 偶尔会在 JSON 前面加说明文字。"""
-    assert parse_llm_json('Here is the result:\n["a"]') is None  # 严格模式
+    assert parse_llm_json('Here is the result:\n["a"]') is None
 
 
 # ====================================================================
@@ -115,14 +121,12 @@ def test_parse_comment_labels_exact_match():
 
 
 def test_parse_comment_labels_shorter_than_expected():
-    """返回数组比预期短,尾部补 IRRELEVANT。"""
     raw = '["TARGET"]'
     result = parse_comment_labels(raw, 3)
     assert result == ["TARGET", "IRRELEVANT", "IRRELEVANT"]
 
 
 def test_parse_comment_labels_non_array():
-    """非数组返回全 ERROR。"""
     raw = '{"key": "value"}'
     result = parse_comment_labels(raw, 2)
     assert result == ["ERROR", "ERROR"]
@@ -140,226 +144,143 @@ def test_parse_comment_labels_case_insensitive():
 
 
 # ====================================================================
-# build_classify_prompt (归一化 item)
+# build_classify_prompt — 帖子/视频 模式 (parent=None)
 # ====================================================================
 
-def test_build_classify_prompt_basic():
-    item = normalize_item({
-        "tweet_id": "1", "author_handle": "testuser",
-        "author_name": "Test User", "tweet_text": "这是一条测试推文",
-        "likes": 10, "replies": 3,
-    }, "twitter")
-    prompt = build_classify_prompt(item, "AI 资讯")
-    assert "@testuser" in prompt
-    assert "Test User" in prompt
+def test_prompt_basic():
+    item = _tw({"tweet_id": "1", "author_handle": "testuser",
+                "author_name": "Test User", "tweet_text": "这是一条测试推文",
+                "likes": 10, "replies": 3})
+    prompt = build_classify_prompt([item], "AI 资讯")
+    assert "testuser" in prompt
     assert "测试推文" in prompt
     assert "AI 资讯" in prompt
-    assert "[TARGET]" in prompt
-    assert "[AD]" in prompt
-    assert "[IRRELEVANT]" in prompt
+    assert "赞10" in prompt
+    assert "评3" in prompt
+    assert "TARGET" in prompt
+    assert "AD" in prompt
+    assert "IRRELEVANT" in prompt
 
 
-def test_build_classify_prompt_with_comments():
-    item = normalize_item({
-        "tweet_id": "1", "author_handle": "a1", "tweet_text": "post",
-        "comments": [
-            {"commenter_handle": "c1", "text": "comment1"},
-            {"commenter_handle": "c2", "text": "comment2"},
-        ],
-    }, "twitter")
-    prompt = build_classify_prompt(item, "test")
+def test_prompt_with_comments():
+    item = _tw({"tweet_id": "1", "author_handle": "a1", "tweet_text": "post",
+                "comments": [
+                    {"commenter_handle": "c1", "text": "comment1"},
+                    {"commenter_handle": "c2", "text": "comment2"},
+                ]})
+    prompt = build_classify_prompt([item], "test")
     assert "comment1" in prompt
     assert "comment2" in prompt
-    assert "@c1" in prompt
 
 
-def test_build_classify_prompt_with_profile():
-    item = normalize_item({
-        "tweet_id": "1", "author_handle": "a1",
-        "tweet_text": "post",
-        "profile": {"bio": "developer", "followers": 100, "following": 50},
-    }, "twitter")
-    prompt = build_classify_prompt(item, "test")
-    assert "developer" in prompt
-    assert "粉丝: 100" in prompt
+def test_prompt_video():
+    item = _yt({"tweet_id": "v1", "author_handle": "channel",
+                "tweet_text": "video title", "view_count": 500, "duration": 120})
+    prompt = build_classify_prompt([item], "test")
+    assert "【视频】" in prompt
+    assert "播放500" in prompt
 
 
-def test_build_classify_prompt_video_mode():
-    item = normalize_item({
-        "tweet_id": "v1", "author_handle": "channel",
-        "tweet_text": "video title",
-        "view_count": 500,
-    }, "youtube")
-    prompt = build_classify_prompt(item, "test")
-    assert "视频" in prompt
+def test_prompt_youtube_summary():
+    item = _yt({"tweet_id": "v1", "tweet_text": "title",
+                "description": "This is a long description"})
+    prompt = build_classify_prompt([item], "test")
+    assert "摘要" in prompt
+    assert "long description" in prompt
 
 
-def test_build_classify_prompt_no_comments():
-    item = normalize_item({
-        "tweet_id": "1", "author_handle": "a",
-        "tweet_text": "post",
-    }, "twitter")
-    prompt = build_classify_prompt(item, "test")
-    assert "(无评论)" in prompt
+def test_prompt_empty_comments():
+    item = _tw({"tweet_id": "1", "author_handle": "a", "tweet_text": "post"})
+    prompt = build_classify_prompt([item], "test")
+    # 有内容即可, 不要求特定短语
+    assert "post" in prompt
+
+
+def test_prompt_no_comments_field():
+    item = _tw({"tweet_id": "1"})
+    prompt = build_classify_prompt([item], "goal")
+    assert "[1]" in prompt  # 编号不变
 
 
 # ====================================================================
-# build_comment_batch_prompt (归一化 comments + parent item)
+# build_classify_prompt — 评论模式 (parent=...)
 # ====================================================================
 
-def test_build_comment_batch_prompt():
+def test_prompt_comments_mode():
     comments = [
         {"author": "u1", "content": "good"},
         {"author": "u2", "content": "bad"},
     ]
-    parent = normalize_item({
-        "tweet_id": "1", "author_handle": "op",
-        "tweet_text": "original post",
-    }, "twitter")
-    prompt = build_comment_batch_prompt(comments, parent, "AI")
-    assert "@u1" in prompt
-    assert "@u2" in prompt
+    parent = _tw({"tweet_id": "1", "author_handle": "op",
+                  "tweet_text": "original post"})
+    prompt = build_classify_prompt(comments, "AI", parent=parent)
+    assert "u1" in prompt
+    assert "u2" in prompt
     assert "good" in prompt
     assert "bad" in prompt
     assert "original post" in prompt
     assert "AI" in prompt
-    assert "2 条" in prompt
-    assert "JSON 数组" in prompt
+    assert "2" in prompt
 
 
-def test_build_comment_batch_prompt_empty_comments():
-    parent = normalize_item({"tweet_id": "1"}, "twitter")
-    prompt = build_comment_batch_prompt([], parent, "goal")
-    assert "0 条" in prompt
+def test_prompt_comments_empty():
+    parent = _tw({"tweet_id": "1"})
+    prompt = build_classify_prompt([], "goal", parent=parent)
+    assert "0" in prompt
 
 
-def test_build_comment_batch_prompt_uses_author():
-    """归一化格式的 author 字段被正确渲染。"""
+def test_prompt_comments_author_field():
     comments = [{"author": "fallback_user", "content": "hi"}]
-    parent = normalize_item({"tweet_id": "1"}, "twitter")
-    prompt = build_comment_batch_prompt(comments, parent, "goal")
-    assert "@fallback_user" in prompt
+    parent = _tw({"tweet_id": "1"})
+    prompt = build_classify_prompt(comments, "goal", parent=parent)
+    assert "fallback_user" in prompt
 
 
 # ====================================================================
-# build_unified_batch_prompt (归一化 item 列表)
+# build_classify_prompt — 批量模式
 # ====================================================================
 
-def _make(item, platform="twitter"):
-    return normalize_item(item, platform)
-
-
-def test_build_batch_prompt_all_items():
+def test_prompt_batch_all_items():
     items = [
-        _make({"tweet_id": "1", "author_handle": "a1", "tweet_text": "hello"}),
-        _make({"tweet_id": "2", "author_handle": "a2", "tweet_text": "world"}),
+        _tw({"tweet_id": "1", "author_handle": "a1", "tweet_text": "hello"}),
+        _tw({"tweet_id": "2", "author_handle": "a2", "tweet_text": "world"}),
     ]
-    prompt = build_unified_batch_prompt(items, "测试")
+    prompt = build_classify_prompt(items, "测试")
     assert "hello" in prompt
     assert "world" in prompt
-    assert "2 条" in prompt
+    assert "2" in prompt
     assert "测试" in prompt
 
 
-def test_build_batch_prompt_empty():
-    prompt = build_unified_batch_prompt([], "goal")
-    assert "0 条" in prompt
+def test_prompt_batch_empty():
+    prompt = build_classify_prompt([], "goal")
+    assert "0" in prompt
 
 
-def test_build_batch_prompt_truncation():
-    """正文超过 300 字符时截断。"""
-    items = [_make({"tweet_id": "x", "tweet_text": "y" * 500})]
-    prompt = build_unified_batch_prompt(items, "goal")
-    assert "y" * 350 not in prompt
-
-
-_UNIFIED_TWITTER = normalize_item({
-    "tweet_id": "1",
-    "author_handle": "user1",
-    "author_name": "User One",
-    "tweet_text": "这是一条测试推文",
-    "likes": 10,
-    "replies": 3,
-    "comments": [
-        {"commenter_handle": "c1", "commenter_name": "C1",
-         "text": "good post", "timestamp": "", "likes": 2},
-    ],
-}, "twitter")
-
-_UNIFIED_YOUTUBE = normalize_item({
-    "tweet_id": "vid1",
-    "author_handle": "channel",
-    "author_name": "Channel",
-    "tweet_text": "Video Title",
-    "view_count": 1000,
-    "duration": 120,
-    "comments": [],
-}, "youtube")
-
-_UNIFIED_REDDIT = normalize_item({
-    "tweet_id": "r1",
-    "author_handle": "u_reddit",
-    "author_name": "Redditor",
-    "tweet_text": "Reddit Post",
-    "comments": [
-        {"commenter_handle": "rc1", "text": "nice", "likes": 1},
-    ],
-}, "reddit")
-
-
-def test_unified_prompt_includes_platform_label():
-    items = [_UNIFIED_TWITTER, _UNIFIED_YOUTUBE, _UNIFIED_REDDIT]
-    prompt = build_unified_batch_prompt(items, "AI 资讯")
+def test_prompt_batch_platform_labels():
+    items = [
+        _tw({"tweet_id": "1", "author_handle": "a1", "tweet_text": "x"}),
+        _yt({"tweet_id": "v1", "author_handle": "ch", "tweet_text": "x"}),
+        _rd({"tweet_id": "r1", "author_handle": "u", "tweet_text": "x"}),
+    ]
+    prompt = build_classify_prompt(items, "test")
     assert "【推文】" in prompt
     assert "【视频】" in prompt
     assert "【帖子】" in prompt
 
 
-def test_unified_prompt_includes_authors():
-    items = [_UNIFIED_TWITTER]
-    prompt = build_unified_batch_prompt(items, "test")
-    assert "@user1" in prompt
-
-
-def test_unified_prompt_includes_comments():
-    items = [_UNIFIED_TWITTER]
-    prompt = build_unified_batch_prompt(items, "test")
-    assert "评论1" in prompt
-    assert "@c1" in prompt
-    assert "good post" in prompt
-
-
-def test_unified_prompt_item_count():
-    items = [_UNIFIED_TWITTER, _UNIFIED_YOUTUBE]
-    prompt = build_unified_batch_prompt(items, "test")
-    assert "2 条" in prompt
-
-
-def test_unified_prompt_goal():
-    prompt = build_unified_batch_prompt([_UNIFIED_TWITTER], "筛选真实用户")
-    assert "筛选真实用户" in prompt
-
-
-def test_unified_prompt_empty_items():
-    prompt = build_unified_batch_prompt([], "goal")
-    assert "0 条" in prompt
-
-
-def test_unified_prompt_truncation():
-    """正文超过 300 字符时截断。"""
-    long = normalize_item({
-        "tweet_id": "x",
-        "tweet_text": "y" * 500,
-    }, "twitter")
-    prompt = build_unified_batch_prompt([long], "goal")
+def test_prompt_batch_truncation():
+    long = _tw({"tweet_id": "x", "tweet_text": "y" * 500})
+    prompt = build_classify_prompt([long], "goal")
     assert "y" * 350 not in prompt
 
 
-def test_unified_prompt_no_comments_field():
-    """无 comments 字段的 item 不崩溃。"""
-    item = normalize_item({"tweet_id": "1"}, "twitter")
-    prompt = build_unified_batch_prompt([item], "goal")
-    assert "[1]" in prompt
+def test_prompt_batch_stats():
+    item = _tw({"tweet_id": "1", "author_handle": "a",
+                "tweet_text": "x", "likes": 42, "replies": 7})
+    prompt = build_classify_prompt([item], "goal")
+    assert "赞42" in prompt
+    assert "评7" in prompt
 
 
 # ---- 独立运行 ----

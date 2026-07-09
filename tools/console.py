@@ -59,8 +59,7 @@ from reddit_extractor import (
 
 # LLM 过滤共享模块
 from _llm import (
-    build_classify_prompt, build_comment_batch_prompt,
-    build_unified_batch_prompt,
+    build_classify_prompt,
     normalize_label, call_deepseek, parse_comment_labels,
 )
 from _normalize import normalize_batch  # 跨平台统一 schema
@@ -2050,7 +2049,7 @@ class ConsoleApp:
 
                 # 第一阶段: 批量调用
                 try:
-                    prompt = build_unified_batch_prompt(items, goal)
+                    prompt = build_classify_prompt(items, goal)
                     raw = call_deepseek(
                         [
                             {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
@@ -2081,7 +2080,7 @@ class ConsoleApp:
                         raw_item = call_deepseek(
                             [
                                 {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                                {"role": "user", "content": build_classify_prompt(item, goal)},
+                                {"role": "user", "content": build_classify_prompt([item], goal)},
                             ],
                             api_key=api_key, max_tokens=10, timeout=30, retries=1,
                         )
@@ -2100,7 +2099,7 @@ class ConsoleApp:
                     # 评论区也批量分类
                     comments = item.get("comments") or []
                     if comments:
-                        batch_prompt = build_comment_batch_prompt(comments, item, goal)
+                        batch_prompt = build_classify_prompt(comments, goal, parent=item)
                         try:
                             c_raw = call_deepseek(
                                 [
