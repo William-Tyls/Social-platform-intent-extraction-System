@@ -146,42 +146,19 @@ page = browser.new_page()
 # 对反爬系统而言，这就是一个真实的用户浏览器
 ```
 
-## 我们做的优化
+## 我们的优化
 
-针对 CloakBrowser 底层引擎做了安全性增强，对比标准 Playwright：
+针对 CloakBrowser 底层引擎做了安全性加固和代码质量提升：
 
-### 指纹安全性
-
-| 优化项 | 改动 | 效果 |
+| 优化项 | 模块 | 改动 |
 |---|---|---|
-| **指纹种子** | `random.randint` → `secrets.randbelow` | MT19937 可被推算种子反推指纹序列 → CSPRNG 不可预测 |
-| **TLS 指纹** | 二进制层与 Chrome 一致 | ja3n/ja4 → 与标准 Chrome 相同 |
-| **WebDriver 标记** | C++ 源码级去除 | `navigator.webdriver` → `false` |
+| **CSPRNG 指纹生成** | `cloakbrowser/config.py`, `human/config.py` | `random.randint` (MT19937) → `secrets.randbelow`，消除指纹序列可预测性 |
+| **延迟加载** | `js/src/config.ts` | import 时不再同步读取 `package.json`，减小冷启动指纹面 |
+| **可操作性检查增强** | `cloakbrowser/human/actionability.py` | 元素交互前增加多级检查 (attached → visible → stable) |
+| **CDP 隔离输入** | `cloakbrowser/human/keyboard.py` | 用 `Input.dispatchKeyEvent` 替代 JS injection，`isTrusted=true` |
+| **日志系统** | `cloakbrowser/human/config.py` | 新增模块级 logger 便于生产调试 |
 
-### 行为拟人化 (humanize=True)
-
-| 优化项 | 改动 | 效果 |
-|---|---|---|
-| **可操作性检查** | 增加 `attached → visible → stable → enabled → editable` 多级检查 | 避免元素未就绪时触发交互 (机器人特征) |
-| **CDP 隔离世界** | 用 `Input.dispatchKeyEvent` 替代 `page.evaluate` | `isTrusted=true`，不留 JS 注入痕迹 |
-| **日志系统** | 新增模块级 logger | 便于生产环境调试行为链路 |
-
-### JS/TS 库
-
-| 优化项 | 改动 | 效果 |
-|---|---|---|
-| **延迟加载** | 消除 `package.json` 同步读取 | import 时不再做文件系统调用，减小冷启动指纹面 |
-
-### 评测结果
-
-| 检测系统 | 标准 Playwright | 优化后 CloakBrowser |
-|---|---|---|
-| **reCAPTCHA v3** | 0.1 (机器人) | **0.9** (人类) |
-| **Cloudflare Turnstile** | 失败 | **通过** |
-| **FingerprintJS** | 已检测 | **通过** |
-| **BrowserScan** | 异常 | **正常** (4/4) |
-| **bot.incolumitas.com** | 13 项失败 | **1 项** (仅 WEBDRIVER) |
-| **deviceandbrowserinfo.com** | 6 个标志 | **0 个标志**，isBot: false |
+CloakBrowser 本身已通过 6 项主流检测系统 (reCAPTCHA v3 0.9、Cloudflare Turnstile、FingerprintJS、BrowserScan 等)，详见[官方 README](https://github.com/CloakHQ/CloakBrowser#readme)。
 
 ## Twitter/Reddit 使用说明
 
