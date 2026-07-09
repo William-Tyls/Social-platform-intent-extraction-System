@@ -135,18 +135,13 @@ tools/
 
 ### 指标提升
 
-| 检测系统 | 优化前 | 优化后 | 改进 |
+| 检测项 | 基线 | 优化后 | 说明 |
 |---|---|---|---|
-| **CreepJS likeHeadless** | 31% (5 fails) | **0%** (0 fails) | ✅ 完美通过 |
-| **fingerprint-scan hd_fails** | 3 | **0** | ✅ 消除 |
-| bot.sannysoft | 56/56 | 56/56 | ✅ 保持 |
-| bot.incolumitas | 35/36 | 35/36 | ✅ 保持 |
-| BrowserScan | 19/0 (Normal) | 19/0 | ✅ 保持 |
-| deviceandbrowserinfo | isBot=False | isBot=False | ✅ 保持 |
-| CF Turnstile | PASS | PASS | ✅ 保持 |
-| ShieldSquare | FAIL | **PASS** | ✅ 修复 (根因是代理 IP 信誉, 非指纹问题) |
-| reCAPTCHA v3 | 0.9 | 0.9 | ✅ 保持 |
-| **FingerprintJS Smart Signal** | BLOCKED | BLOCKED | ⚠️ 待 binary 修复 |
+| **CreepJS likeHeadless** | 31% (5 fails) | **0%** (0 fails) | API polyfill 修正 + 颜色信号消除 |
+| **fingerprint-scan hd_fails** | 3 | **0** | 随 CreepJS 修复自动消除 |
+| **ShieldSquare** | FAIL | **PASS** | 代理 IP 信誉诊断修复 |
+
+> 基线为 2026-06-26 美国住宅代理实测数据。其他 7 项检测 (bot.sannysoft, BrowserScan, CF Turnstile, reCAPTCHA v3 等) 优化前后均保持通过，详见[完整文档](docs/cloakbrowser-optimization-plan.md)。FingerprintJS BLOCKED 待 binary 层修复。
 
 ### 我们做的优化
 
