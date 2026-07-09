@@ -1,10 +1,10 @@
-# Social Platform Intent Extraction System
+# 🎯 Social Platform Intent Extraction System
 
 多平台社交数据意图提取系统 — 基于优化后的 CloakBrowser 隐身浏览器构建，支持 **YouTube** / **Twitter/X** / **Reddit** 三大平台的用户内容批量采集和 LLM 智能过滤。
 
 ---
 
-## 架构
+## 🏗️ 架构
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -31,7 +31,7 @@
   └── youtube_dedup.py       — SQLite 跨进程去重
 ```
 
-## 功能
+## ✨ 功能
 
 | 平台 | 模式 | 获取数据 | 依赖 |
 |---|---|---|---|
@@ -41,7 +41,7 @@
 
 **LLM 智能过滤**：基于 DeepSeek，对采集到的帖子/视频/评论自动分类（目标 / 广告 / 无关），支持跨平台使用。
 
-## 快速开始
+## 🚀 快速开始
 
 ```bash
 # 1. 安装依赖
@@ -62,7 +62,7 @@ cp tools/config.example.json tools/config.json
 python tools/console.py
 ```
 
-### CLI 模式
+### 💻 CLI 模式
 
 ```bash
 # YouTube: 搜索 100 个视频 + 每条 10 个评论
@@ -82,7 +82,7 @@ python tools/apps/twitter_search_test.py "{关键词}"  # 3. 搜索
 python tools/apps/llm_filter.py "{结果文件.json}" --goal "{筛选目标}"
 ```
 
-## 目录结构
+## 📁 目录结构
 
 ```
 tools/
@@ -124,7 +124,7 @@ tools/
     └── undetected_chromedriver.py
 ```
 
-## YouTube 两层架构
+## 🎬 YouTube 两层架构
 
 ```
 发现层 (API):  youtube_api.py
@@ -137,11 +137,11 @@ tools/
   零配额, 零代理, 完整评论树
 ```
 
-## 底层引擎: CloakBrowser
+## 🔧 底层引擎: CloakBrowser
 
 本项目构建在 [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 之上，一个经过 58 个 C++ 源码级补丁的隐身 Chromium 浏览器 (v0.3.31, Chrome/145)。我们在其基础上做了性能和安全性增强，以下是优化结果。
 
-### 指标提升
+### 📊 指标提升
 
 | 检测项 | 基线 | 优化后 | 说明 |
 |---|---|---|---|
@@ -151,7 +151,7 @@ tools/
 
 > 基线为 2026-06-26 美国住宅代理实测数据。其他 7 项检测 (bot.sannysoft, BrowserScan, CF Turnstile, reCAPTCHA v3 等) 优化前后均保持通过，详见[完整文档](docs/cloakbrowser-optimization-plan.md)。FingerprintJS BLOCKED 待 binary 层修复。
 
-### 我们做的优化
+### ⚡ 我们做的优化
 
 | 层级 | 优化项 | 改动 |
 |---|---|---|
@@ -164,12 +164,12 @@ tools/
 | | CDP 隔离世界 | 特殊字符用 `Input.dispatchKeyEvent` 替代 `page.evaluate`，`isTrusted=true` 不触发伪造检测 |
 | **ShieldSquare** | 代理 IP 诊断 | 确认 PASS/FAIL 差异来自代理 IP 信誉而非指纹，消除误报 |
 
-### 待解决 (需 binary 层配合)
+### 🚧 待解决 (需 binary 层配合)
 
 **FingerprintJS (L3)** 和 **PixelScan inconsistent** 共享同一根因：CloakBrowser binary 未修补 `chrome.runtime`、`navigator.plugins`(仅5)、`navigator.mimeTypes`(仅2)、`navigator.userAgentData`(macOS 缺失)。这些 C++ 层的 V8 native getter 无法用 JavaScript polyfill 覆盖，需 binary 团队在编译层注入 Compat API。
 
 [查看完整优化文档](docs/cloakbrowser-optimization-plan.md)
 
-## License
+## 📄 License
 
 本项目代码 (tools/) 为 MIT License。底层 CloakBrowser 引擎的许可证详见 [BINARY-LICENSE.md](BINARY-LICENSE.md)。
