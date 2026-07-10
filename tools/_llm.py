@@ -1,13 +1,13 @@
 """LLM 过滤共享模块 — console.py 和 llm_filter.py 共用。
 
 提供:
-  - classify: 构建 prompt → 调 API → 解析 → 返回标签 (一站式)
+  - classify: 构建 prompt → 调 DeepSeek API → 返回标签 (一站式)
   - normalize_label / parse_comment_labels: 解析辅助
 
 用法:
     from _llm import classify
 
-    # 批量分类帖子/视频
+    # 批量分类
     labels = classify(items, "筛选目标", api_key=key)
 
     # 逐条兜底
@@ -29,13 +29,13 @@ DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 MODEL = "deepseek-chat"
 
 
-# ------------------------------------------------------------------
-# 一站式分类
-# ------------------------------------------------------------------
-
-
 class ClassificationError(Exception):
     """LLM 返回格式不正确（非数组、长度不匹配等）。"""
+
+
+# ------------------------------------------------------------------
+# 分类
+# ------------------------------------------------------------------
 
 
 def classify(
@@ -44,17 +44,14 @@ def classify(
     *,
     parent: dict | None = None,
     api_key: str | None = None,
-    client: object | None = None,
 ) -> list[str]:
-    """构建 prompt → 调 API → 返回标签列表。
+    """构建 prompt → 调 DeepSeek → 返回标签列表。
 
     ``parent`` 为 None 时分类帖子/视频，指定时分类评论。
-    ``client`` 为可选的外部 OpenAI 客户端（llm_filter.py CLI 使用）。
     """
     if not items:
         return []
 
-    # 构建编号文本块
     blocks = []
     for i, it in enumerate(items):
         author = it.get("author", "?")
@@ -62,11 +59,9 @@ def classify(
         meta = it.get("meta", {})
 
         if parent is not None:
-            # 评论模式: content 是纯文本字符串 {"author": ..., "content": "..."}
             c_text = content if isinstance(content, str) else content.get("content", "") or ""
             blocks.append(f"[{i+1}] @{author}: {c_text[:250]}")
         else:
-            # 帖子/视频模式: author + title/body + stats + 前3条评论
             text = content.get("title", "") or content.get("body", "")
             lines = [f"[{i+1}] @{author}: {text[:300]}"]
 
@@ -80,16 +75,13 @@ def classify(
             if content.get("body"):
                 lines.append(f"    {content['body'][:200]}")
 
-            for ci, c in enumerate(
-                (it.get("comments") or [])[:3]
-            ):
+            for ci, c in enumerate((it.get("comments") or [])[:3]):
                 lines.append(
                     f"    评{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:120]}"
                 )
 
             blocks.append("\n".join(lines))
 
-    # 拼装最终 prompt
     if parent is not None:
         parent_author = parent.get("author", "?")
         parent_text = (
@@ -116,28 +108,14 @@ def classify(
         f"数组长度 = {len(items)}。"
     )
 
-    # 调 API
-    if client is not None:
-        resp = client.chat.completions.create(  # type: ignore[union-attr]
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=len(items) * 15 + 20,
-        )
-        raw = resp.choices[0].message.content.strip()  # type: ignore[union-attr]
-    else:
-        raw = call_deepseek(
-            [
-                {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                {"role": "user", "content": prompt},
-            ],
-            api_key=api_key,
-            max_tokens=len(items) * 15 + 20,
-        )
-
+    raw = call_deepseek(
+        [
+            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+            {"role": "user", "content": prompt},
+        ],
+        api_key=api_key,
+        max_tokens=len(items) * 15 + 20,
+    )
     arr = parse_llm_json(raw)
     if isinstance(arr, list) and len(arr) == len(items):
         return [normalize_label(str(x)) for x in arr]

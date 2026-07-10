@@ -1,10 +1,8 @@
 """LLM 过滤 CLI — 读取采集结果，调用 DeepSeek 分类并提取发现。
 
 用法:
-    DEEPSEEK_API_KEY="sk-xxx" python tools/llm_filter.py twitter_results.json
-    python tools/llm_filter.py twitter_results.json --goal "筛选真实租户"
-
-依赖: pip install openai
+    DEEPSEEK_API_KEY="sk-xxx" python tools/llm_filter.py results.json
+    python tools/llm_filter.py results.json --goal "筛选真实租户"
 """
 
 import json
@@ -15,11 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import load_env  # noqa: E402
-from _llm import _build_prompt, classify, normalize_label, parse_llm_json  # noqa: E402
+from _llm import classify, call_deepseek, parse_llm_json  # noqa: E402
 from _normalize import normalize_batch  # noqa: E402
-
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-MODEL = "deepseek-chat"
 
 
 # ---- 参数解析 ----
@@ -52,8 +47,8 @@ def _make_output_path(input_path: Path) -> Path:
 
 # ---- 分类 ----
 
-def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -> list[dict]:
-    """批量分类，调用 classify()。CLI 使用 OpenAI 客户端转发。"""
+def classify_tweets(tweets: list[dict], goal: str, api_key: str) -> list[dict]:
+    """批量分类，优先一次批量调用，失败回退逐条。"""
     if not goal:
         goal = "通用信息筛选，保留有价值的原创内容，过滤广告和无关帖子"
 
@@ -62,23 +57,9 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
 
     labels: list[str] = [""] * len(tweets)
 
-    # 第一步: 批量 — 使用 OpenAI 客户端但复用 _llm 的 prompt
+    # 第一步: 批量
     try:
-        prompt = _build_prompt(tweets, goal)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=len(tweets) * 15 + 20,
-        )
-        parsed = parse_llm_json(resp.choices[0].message.content)
-        if isinstance(parsed, list) and len(parsed) == len(tweets):
-            labels = [normalize_label(str(x)) for x in parsed]
-        else:
-            print(f"  ⚠️ 批量返回长度不匹配, 回退逐条")
+        labels = classify(tweets, goal, api_key=api_key)
     except Exception as e:
         print(f"  ⚠️ 批量分类异常: {e}, 回退逐条")
 
@@ -87,17 +68,7 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
         if labels[i]:
             continue
         try:
-            prompt = _build_prompt([t], goal)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=10,
-            )
-            labels[i] = normalize_label(resp.choices[0].message.content)
+            labels[i] = classify([t], goal, api_key=api_key)[0]
         except Exception as e:
             print(f"  [{i+1}] API 异常: {e}")
             labels[i] = "ERROR"
@@ -121,7 +92,7 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
 
 # ---- 发现提取 ----
 
-def extract_findings(target_tweets: list[dict], goal: str, client, model: str = MODEL) -> list[str]:
+def extract_findings(target_tweets: list[dict], goal: str, api_key: str) -> list[str]:
     """汇总目标推文，提取核心发现。"""
     if not target_tweets:
         return ["无符合条件的帖文。"]
@@ -151,16 +122,16 @@ def extract_findings(target_tweets: list[dict], goal: str, client, model: str = 
 如果内容不足以提取 3 条，有几条写几条。"""
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
+        raw = call_deepseek(
+            [
                 {"role": "system", "content": "你是一个信息分析师。只回复 JSON 数组。"},
                 {"role": "user", "content": prompt},
             ],
+            api_key=api_key,
             temperature=0.3,
             max_tokens=800,
         )
-        findings = parse_llm_json(resp.choices[0].message.content)
+        findings = parse_llm_json(raw)
         if isinstance(findings, list):
             for i, f in enumerate(findings):
                 print(f"  [{i+1}] {f}")
@@ -205,14 +176,11 @@ def main():
         print("没有需要处理的数据。")
         sys.exit(0)
 
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
-
     t0 = datetime.now(dt_timezone.utc)
 
-    labeled = classify_tweets(tweets, goal, client)
+    labeled = classify_tweets(tweets, goal, api_key)
     target_tweets = [t for t in labeled if t["label"] == "TARGET"]
-    findings = extract_findings(target_tweets, goal, client)
+    findings = extract_findings(target_tweets, goal, api_key)
 
     output = {
         "filtered_at": datetime.now(dt_timezone.utc).isoformat(),
