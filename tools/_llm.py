@@ -1,20 +1,15 @@
 """LLM 过滤共享模块 — console.py 和 llm_filter.py 共用。
 
 提供:
-  - classify: 构建 prompt → 调 DeepSeek API → 返回标签 (一站式)
-  - normalize_label / parse_comment_labels: 解析辅助
+  - classify: 构建 prompt → 调 DeepSeek → 返回意向对象列表
 
 用法:
     from _llm import classify
 
-    # 批量分类
-    labels = classify(items, "筛选目标", api_key=key)
-
-    # 逐条兜底
-    labels = classify([item], "筛选目标", api_key=key)
-
-    # 分类评论
-    labels = classify(comments, "筛选目标", parent=item, api_key=key)
+    comments = [{"author": "u1", "content": "怎么买",
+                 "parent_author": "poster", "parent_content": "新品发布..."}]
+    results = classify(comments, "筛选目标", api_key=key)
+    # → [{"author":"u1","intent":"HIGH","content":"怎么买"}, ...]
 
 环境变量: DEEPSEEK_API_KEY
 """
@@ -28,13 +23,17 @@ import time
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 MODEL = "deepseek-chat"
 
+INTENT_HIGH = "HIGH"
+INTENT_INTERESTED = "INTERESTED"
+INTENT_NONE = "NONE"
+
 
 class ClassificationError(Exception):
-    """LLM 返回格式不正确（非数组、长度不匹配等）。"""
+    """LLM 返回格式不正确。"""
 
 
 # ------------------------------------------------------------------
-# 分类
+# 意向分类
 # ------------------------------------------------------------------
 
 
@@ -42,102 +41,72 @@ def classify(
     items: list[dict],
     goal: str,
     *,
-    parent: dict | None = None,
     api_key: str | None = None,
-) -> list[str]:
-    """构建 prompt → 调 DeepSeek → 返回标签列表。
+) -> list[dict]:
+    """对评论进行意向分类，返回作者+意向+内容的对象列表。
 
-    ``parent`` 为 None 时分类帖子/视频，指定时分类评论。
+    items 格式: {author, content, parent_author, parent_content}
+    返回: [{author, intent: HIGH|INTERESTED|NONE, content}, ...]
     """
     if not items:
         return []
 
     blocks = []
     for i, it in enumerate(items):
-        author = it.get("author", "?")
-        content = it.get("content", {})
-        meta = it.get("meta", {})
-
-        if parent is not None:
-            c_text = content if isinstance(content, str) else content.get("content", "") or ""
-            blocks.append(f"[{i+1}] @{author}: {c_text[:250]}")
-        else:
-            text = content.get("title", "") or content.get("body", "")
-            lines = [f"[{i+1}] @{author}: {text[:300]}"]
-
-            parts = []
-            if meta.get("views"):
-                parts.append(f"播放{meta['views']:,}")
-            parts.append(f"赞{meta.get('likes', 0):,}")
-            parts.append(f"评{meta.get('replies', 0):,}")
-            lines.append(f"    {' | '.join(parts)}")
-
-            if content.get("body"):
-                lines.append(f"    {content['body'][:200]}")
-
-            for ci, c in enumerate((it.get("comments") or [])[:3]):
-                lines.append(
-                    f"    评{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:120]}"
-                )
-
-            blocks.append("\n".join(lines))
-
-    if parent is not None:
-        parent_author = parent.get("author", "?")
-        parent_text = (
-            parent.get("content", {}).get("title", "")
-            or parent.get("content", {}).get("body", "")
-        )[:200]
-        header = (
-            f"判断以下评论是否与筛选目标相关。返回 JSON 数组。\n\n"
-            f"筛选目标：{goal}\n"
-            f"原帖 @{parent_author}: {parent_text}\n\n"
-        )
-    else:
-        header = (
-            f"判断以下每条内容是否与筛选目标相关。返回 JSON 数组。\n\n"
-            f"筛选目标：{goal}\n\n"
+        blocks.append(
+            f"[{i+1}]\n"
+            f"  原帖 @{it.get('parent_author', '?')}: {it.get('parent_content', '')[:200]}\n"
+            f"  评论 @{it.get('author', '?')}: {it.get('content', '')[:300]}"
         )
 
     prompt = (
-        header
-        + ("\n---\n".join(blocks) if parent is None else "\n".join(blocks))
-        + f"\n\n"
-        f"逐条判断, 仅回复 JSON 数组:\n"
-        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
+        f"判断以下每条评论中，用户是否对筛选目标有购买/使用意向。"
+        f"返回 JSON 对象数组。\n\n"
+        f"筛选目标：{goal}\n\n"
+        f"意向定义：\n"
+        f"  HIGH — 明确表达了购买、使用、尝试或获取的意愿"
+        f"（如\"怎么买\"\"求链接\"\"在哪下载\"\"想试试\"\"推荐一下\"）\n"
+        f"  INTERESTED — 表现出兴趣但处于观望"
+        f"（如\"看起来不错\"\"有点意思\"\"收藏了\"\"Mark\"\"关注一下\"）\n"
+        f"  NONE — 没有表现出任何兴趣，或与目标无关\n\n"
+        + "\n---\n".join(blocks)
+        + f"\n---\n\n"
+        f"逐条判断, 仅回复 JSON 对象数组:\n"
+        f'[{{"author":"用户名","intent":"HIGH|INTERESTED|NONE","content":"评论内容"}},...]\n'
         f"数组长度 = {len(items)}。"
     )
 
     raw = call_deepseek(
         [
-            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+            {"role": "system", "content": "你是一个意向分析助手。只回复 JSON 对象数组。每个对象含 author/intent/content 三个字段。"},
             {"role": "user", "content": prompt},
         ],
         api_key=api_key,
-        max_tokens=len(items) * 15 + 20,
+        max_tokens=len(items) * 60 + 50,
     )
     arr = parse_llm_json(raw)
     if isinstance(arr, list) and len(arr) == len(items):
-        return [normalize_label(str(x)) for x in arr]
+        return [_normalize_intent(obj) for obj in arr]
     raise ClassificationError(
-        f"LLM 返回格式错误: 期望 {len(items)} 个标签, "
+        f"LLM 返回格式错误: 期望 {len(items)} 个对象, "
         f"实际 {type(arr).__name__}"
     )
 
 
-# ------------------------------------------------------------------
-# 标签归一化
-# ------------------------------------------------------------------
-
-
-def normalize_label(raw: str) -> str:
-    """把 LLM 返回文本归一化为 TARGET/AD/IRRELEVANT。"""
-    s = (raw or "").upper()
-    if "TARGET" in s:
-        return "TARGET"
-    if "AD" in s:
-        return "AD"
-    return "IRRELEVANT"
+def _normalize_intent(obj: dict) -> dict:
+    """归一化单个意向对象。"""
+    raw = str(obj.get("intent", "")).upper()
+    if "HIGH" in raw or "购买" in raw or "强烈" in raw:
+        intent = INTENT_HIGH
+    elif "INTEREST" in raw or "感兴趣" in raw or "观望" in raw or "兴趣" in raw:
+        intent = INTENT_INTERESTED
+    else:
+        intent = INTENT_NONE
+    return {
+        "author": obj.get("author") or None,
+        "intent": intent,
+        "content": obj.get("content") or None,
+    }
 
 
 # ------------------------------------------------------------------
@@ -159,16 +128,6 @@ def parse_llm_json(raw: str) -> list | dict | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
-
-
-def parse_comment_labels(raw: str, expected_len: int) -> list[str]:
-    """解析评论批量分类的 JSON 数组,长度不匹配时补 IRRELEVANT。"""
-    arr = parse_llm_json(raw)
-    if not isinstance(arr, list):
-        return ["ERROR"] * expected_len
-    result = [normalize_label(str(arr[i])) if i < len(arr) else "IRRELEVANT"
-              for i in range(expected_len)]
-    return result
 
 
 # ------------------------------------------------------------------

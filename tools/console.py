@@ -58,7 +58,7 @@ from reddit_extractor import (
 )
 
 # LLM 过滤共享模块
-from _llm import classify, parse_comment_labels, ClassificationError
+from _llm import classify, ClassificationError
 from _normalize import normalize_batch  # 跨平台统一 schema
 
 # ---- 路径 ----
@@ -1366,7 +1366,7 @@ class ConsoleApp:
         result_pane.add(table_frame, weight=1)
 
         # 列 ID 固定, 平台切换时只改 heading 文字
-        columns = ("#", "作者", "内容摘要", "图", "评", "赞", "转", "回", "标签")
+        columns = ("#", "作者", "内容摘要", "图", "评", "赞", "转", "回", "🔥意向")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
                                   height=8, selectmode="browse")
         self.tree.heading("#", text="#", anchor=tk.CENTER)
@@ -1385,8 +1385,8 @@ class ConsoleApp:
         self.tree.column("转", width=45, anchor=tk.CENTER, stretch=False)
         self.tree.heading("回", text="回", anchor=tk.CENTER)
         self.tree.column("回", width=45, anchor=tk.CENTER, stretch=False)
-        self.tree.heading("标签", text="标签", anchor=tk.CENTER)
-        self.tree.column("标签", width=65, anchor=tk.CENTER, stretch=False)
+        self.tree.heading("🔥意向", text="🔥意向", anchor=tk.CENTER)
+        self.tree.column("🔥意向", width=65, anchor=tk.CENTER, stretch=False)
 
         t_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=t_scroll.set)
@@ -1436,7 +1436,7 @@ class ConsoleApp:
         ttk.Label(frame, text=" 筛选:").pack(side=tk.LEFT, padx=(20, 0))
         self.filter_var = tk.StringVar(value="全部")
         self.filter_combo = ttk.Combobox(frame, textvariable=self.filter_var,
-                                          values=["全部", "TARGET", "AD", "IRRELEVANT"],
+                                          values=["全部", "HIGH", "INTERESTED", "NONE"],
                                           width=12, state="readonly")
         self.filter_combo.pack(side=tk.LEFT, padx=(2, 0))
         self.filter_combo.current(0)
@@ -1824,10 +1824,13 @@ class ConsoleApp:
             meta = item.get("meta", {})
             img_count = len(meta.get("images", []) or [])
             comment_count = len(item.get("comments", []) or [])
-            label = item.get("label", "")
+            # 意向统计: HIGH / INTERESTED / NONE
+            comments = item.get("comments") or []
+            hi = sum(1 for c in comments if c.get("intent") == "HIGH")
+            interested = sum(1 for c in comments if c.get("intent") == "INTERESTED")
+            intent_str = f"🔥{hi}👀{interested}" if (hi or interested) else ""
 
             if item.get("platform") == "youtube":
-                # YouTube: 图=空, 评=评论数, 赞=播放, 转=点赞, 回=时长
                 duration = meta.get("duration", 0) or 0
                 duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
                 self.tree.insert("", tk.END, values=(
@@ -1837,7 +1840,7 @@ class ConsoleApp:
                     meta.get("views", 0),
                     meta.get("likes", 0),
                     duration_str,
-                    label,
+                    intent_str,
                 ))
             else:
                 self.tree.insert("", tk.END, values=(
@@ -1849,7 +1852,7 @@ class ConsoleApp:
                     meta.get("likes", 0),
                     meta.get("retweets", 0),
                     meta.get("replies", 0),
-                    label,
+                    intent_str,
                 ))
 
     def _clear_results(self):
@@ -1964,8 +1967,8 @@ class ConsoleApp:
                 text_parts.append(f"{'─' * 50}")
                 text_parts.append(f"💬 评论 ({len(comments)} 条):")
                 for ci, c in enumerate(comments):
-                    cl = c.get('label', '')
-                    cl_icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌"}.get(cl, "")
+                    cl = c.get('intent', '')
+                    cl_icon = {"HIGH": "🔥", "INTERESTED": "👀", "NONE": "—"}.get(cl, "")
                     text_parts.append(
                         f"  [{ci+1}] {cl_icon} @{c.get('author','?')}:"
                     )
@@ -2041,66 +2044,67 @@ class ConsoleApp:
                     return
 
                 items = self.tweets_cache
-                counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}
-                labels = [""] * len(items)
+                # 收集所有评论，拼接帖子上下文
+                enriched: list[dict] = []
+                for item in items:
+                    parent_author = item.get("author", "")
+                    parent_content = item.get("content", {}).get("title", "")
+                    for c in item.get("comments") or []:
+                        enriched.append({
+                            "author": c.get("author", ""),
+                            "content": c.get("content", ""),
+                            "parent_author": parent_author,
+                            "parent_content": parent_content,
+                        })
 
-                # 第一阶段: 批量
+                if not enriched:
+                    self.msg_queue.put({"type": "log", "text": "没有评论可供分析", "level": "warn"})
+                    self.msg_queue.put({"type": "llm_done"})
+                    return
+
+                # 一次批量调用
+                results: list[dict] = []
                 try:
-                    labels = classify(items, goal, api_key=api_key)
-                    self.msg_queue.put({"type": "log", "text": f"  批量分类成功: {len(labels)} 条", "level": "info"})
+                    results = classify(enriched, goal, api_key=api_key)
+                    self.msg_queue.put({"type": "log", "text": f"  意向分析完成: {len(results)} 条评论", "level": "info"})
                 except ClassificationError as e:
-                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ {e}, 回退逐条", "level": "warn"})
+                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ {e}", "level": "warn"})
                 except Exception as e:
-                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ 批量分类异常: {e}, 回退逐条", "level": "warn"})
+                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ 意向分析异常: {e}", "level": "warn"})
 
-                # 第二阶段: 逐条兜底
-                for i, item in enumerate(items):
+                # 失败时标记全部 ERROR
+                if not results:
+                    results = [{"author": None, "intent": "ERROR", "content": None}] * len(enriched)
+
+                # 逐条兜底
+                for i, (comment, result) in enumerate(zip(enriched, results)):
+                    if result.get("intent") != "ERROR" and result.get("intent"):
+                        continue
                     if self.stop_event.is_set():
                         break
-                    if labels[i]:
-                        continue
                     try:
-                        labels[i] = classify([item], goal, api_key=api_key)[0]
-                    except Exception as e:
-                        self.msg_queue.put({"type": "log", "text": f"  [{i+1}] API 调用失败: {e}", "level": "warn"})
-                        labels[i] = "ERROR"
+                        fallback = classify([comment], goal, api_key=api_key)
+                        if fallback:
+                            results[i] = fallback[0]
+                    except Exception:
+                        results[i] = {"author": None, "intent": "ERROR", "content": None}
 
-                # 应用标签
-                labeled = []
-                for i, item in enumerate(items):
-                    label = labels[i]
-                    counts[label] = counts.get(label, 0) + 1
-                    item["label"] = label
+                # 写回评论的 intent 字段
+                idx = 0
+                counts = {"HIGH": 0, "INTERESTED": 0, "NONE": 0, "ERROR": 0}
+                for item in items:
+                    for c in item.get("comments") or []:
+                        if idx < len(results):
+                            c["intent"] = results[idx].get("intent", "NONE")
+                            counts[c["intent"]] = counts.get(c["intent"], 0) + 1
+                            idx += 1
 
-                    # 评论区分类
-                    comments = item.get("comments") or []
-                    if comments:
-                        try:
-                            c_labels = classify(comments, goal, parent=item, api_key=api_key)
-                        except Exception:
-                            c_labels = ["ERROR"] * len(comments)
-                        c_counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}
-                        for ci, c in enumerate(comments):
-                            cl = c_labels[ci] if ci < len(c_labels) else "IRRELEVANT"
-                            c["label"] = cl
-                            c_counts[cl] = c_counts.get(cl, 0) + 1
-                        self.msg_queue.put({"type": "log", "text": f"    评论区: {c_counts['TARGET']} 目标 / {c_counts['AD']} 广告 / {c_counts['IRRELEVANT']} 无关", "level": "info"})
-
-                    labeled.append(item)
-                    icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌", "ERROR": "⚠️"}.get(label, "?")
-                    self.msg_queue.put({"type": "log", "text": f"  [{i+1}] {icon} {label} @{item.get('author', '?')}", "level": "info"})
-
-                if self.stop_event.is_set():
-                    self.msg_queue.put({"type": "log", "text": f"已中断: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关 (仅处理 {len(labeled)}/{len(items)} 条)", "level": "warn"})
-                else:
-                    self.msg_queue.put({"type": "log", "text": f"过滤完成: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关", "level": "success"})
-
-                if labeled:
-                    self.msg_queue.put({"type": "result", "tweets": labeled})
+                self.msg_queue.put({"type": "log", "text": f"意向分析: {counts['HIGH']} 强烈 / {counts['INTERESTED']} 观望 / {counts['NONE']} 无关", "level": "success"})
+                self.msg_queue.put({"type": "result", "tweets": items})
+                self.msg_queue.put({"type": "llm_done"})
 
             except Exception as e:
                 self.msg_queue.put({"type": "log", "text": f"LLM 过滤失败: {e}", "level": "error"})
-            finally:
                 self.msg_queue.put({"type": "llm_done"})
 
         threading.Thread(target=_run_filter, daemon=True).start()

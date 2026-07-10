@@ -1,8 +1,8 @@
-"""LLM 过滤 CLI — 读取采集结果，调用 DeepSeek 分类并提取发现。
+"""LLM 过滤 CLI — 对采集结果中的评论进行意向分类。
 
 用法:
     DEEPSEEK_API_KEY="sk-xxx" python tools/llm_filter.py results.json
-    python tools/llm_filter.py results.json --goal "筛选真实租户"
+    python tools/llm_filter.py results.json --goal "筛选有购买意向的用户"
 """
 
 import json
@@ -45,76 +45,79 @@ def _make_output_path(input_path: Path) -> Path:
     return out
 
 
-# ---- 分类 ----
+# ---- 意向分析 ----
 
-def classify_tweets(tweets: list[dict], goal: str, api_key: str) -> list[dict]:
-    """批量分类，优先一次批量调用，失败回退逐条。"""
-    if not goal:
-        goal = "通用信息筛选，保留有价值的原创内容，过滤广告和无关帖子"
+def extract_intents(items: list[dict], goal: str, api_key: str) -> list[dict]:
+    """拼接评论与帖子上下文，批量提取意向。"""
+    enriched: list[dict] = []
+    for item in items:
+        parent_author = item.get("author", "")
+        parent_content = item.get("content", {}).get("title", "")
+        for c in item.get("comments") or []:
+            enriched.append({
+                "author": c.get("author", ""),
+                "content": c.get("content", ""),
+                "parent_author": parent_author,
+                "parent_content": parent_content,
+            })
 
-    print(f"\n--- 分类过滤（目标: {goal}）---")
-    print(f"  共 {len(tweets)} 条, 批量分类...\n")
+    if not enriched:
+        print("没有评论可供分析。")
+        return items
 
-    labels: list[str] = [""] * len(tweets)
+    print(f"\n--- 意向分析（目标: {goal}）---")
+    print(f"  共 {len(enriched)} 条评论, 分析中...\n")
 
-    # 第一步: 批量
+    results: list[dict] = []
     try:
-        labels = classify(tweets, goal, api_key=api_key)
+        results = classify(enriched, goal, api_key=api_key)
     except Exception as e:
-        print(f"  ⚠️ 批量分类异常: {e}, 回退逐条")
+        print(f"  ⚠️  意向分析异常: {e}")
+        return items
 
-    # 第二步: 逐条兜底
-    for i, t in enumerate(tweets):
-        if labels[i]:
-            continue
-        try:
-            labels[i] = classify([t], goal, api_key=api_key)[0]
-        except Exception as e:
-            print(f"  [{i+1}] API 异常: {e}")
-            labels[i] = "ERROR"
+    # 写回评论的 intent 字段
+    idx = 0
+    counts = {"HIGH": 0, "INTERESTED": 0, "NONE": 0}
+    for item in items:
+        for c in item.get("comments") or []:
+            if idx < len(results):
+                c["intent"] = results[idx].get("intent", "NONE")
+                counts[c["intent"]] = counts.get(c["intent"], 0) + 1
+                idx += 1
 
-    # 组装
-    labeled = []
-    counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}
-    for i, t in enumerate(tweets):
-        label = labels[i]
-        counts[label] = counts.get(label, 0) + 1
-        t_label = dict(t)
-        t_label["label"] = label
-        labeled.append(t_label)
-        icon = {"TARGET": "✅", "AD": "📢", "IRRELEVANT": "❌", "ERROR": "⚠️"}.get(label, "?")
-        author = t.get("author", t.get("author_handle", "?"))
-        print(f"  [{i+1}] {icon} {label:<12} @{author}")
+    # 打印摘要
+    for i, r in enumerate(results):
+        it = r.get("intent", "?")
+        icon = {"HIGH": "🔥", "INTERESTED": "👀", "NONE": "—"}.get(it, "?")
+        author = r.get("author", "?")
+        content = r.get("content", "")[:60]
+        print(f"  [{i+1}] {icon} {it:<12} @{author}: {content}")
 
-    print(f"\n  结果: {counts['TARGET']} 目标 / {counts['AD']} 广告 / {counts['IRRELEVANT']} 无关")
-    return labeled
+    print(f"\n  结果: 🔥{counts['HIGH']} 强烈 / 👀{counts['INTERESTED']} 观望 / —{counts['NONE']} 无关")
+    return items
 
 
 # ---- 发现提取 ----
 
-def extract_findings(target_tweets: list[dict], goal: str, api_key: str) -> list[str]:
-    """汇总目标推文，提取核心发现。"""
-    if not target_tweets:
-        return ["无符合条件的帖文。"]
+def extract_findings(high_items: list[dict], goal: str, api_key: str) -> list[str]:
+    """汇总 HIGH 意向评论，提取核心发现。"""
+    if not high_items:
+        return ["未发现高意向用户。"]
 
-    print(f"\n--- 提取核心发现（{len(target_tweets)} 条）---")
+    print(f"\n--- 提取核心发现（{len(high_items)} 条 HIGH 意向）---")
 
     summary = ""
-    for i, t in enumerate(target_tweets):
-        author = t.get("author", t.get("author_handle", "?"))
-        text = t.get("content", {}).get("title", "") or t.get("tweet_text", "")
-        summary += f"帖文{i+1} (@{author}): {text[:300]}\n"
-        if t.get("comments"):
-            for c in t["comments"][:3]:
-                handle = c.get("author", c.get("commenter_handle", "?"))
-                body = c.get("content", c.get("text", ""))
-                summary += f"  评论: @{handle}: {body[:150]}\n"
+    for i, t in enumerate(high_items):
+        author = t.get("author", "?")
+        content = t.get("content", "")[:250]
+        parent = t.get("parent_content", "")[:100]
+        summary += f"[{i+1}] @{author}: {content}\n  (原帖: {parent})\n"
 
-    prompt = f"""基于以下搜索结果，提取 3 条核心发现。每条用一句话概括。
+    prompt = f"""基于以下高购买意向的评论，提取 3 条核心发现。每条用一句话概括。
 
 用户目标：{goal}
 
-搜索结果：
+高意向评论：
 {summary[:4000]}
 
 请以 JSON 数组格式回复：
@@ -151,7 +154,7 @@ def main():
     input_path_str = args["input_path"]
 
     if not input_path_str:
-        print('用法: python tools/llm_filter.py <extracted.json> [--goal "..."] [--api-key sk-xxx]')
+        print('用法: python tools/llm_filter.py <results.json> [--goal "..."] [--api-key sk-xxx]')
         print("  或设置环境变量 DEEPSEEK_API_KEY")
         sys.exit(1)
     if not api_key:
@@ -160,37 +163,48 @@ def main():
 
     input_path = Path(input_path_str)
     raw = json.loads(input_path.read_text(encoding="utf-8"))
-    # 兼容新旧两种导出格式
     if "items" in raw:
-        tweets = raw["items"]  # 归一化格式
+        items = raw["items"]
     else:
         tweets = raw.get("tweets", raw.get("videos", []))
-        # 旧格式自动归一化
         platform = "twitter"
-        if raw.get("search_query") or any(t.get("view_count") or t.get("duration") for t in tweets):
+        if raw.get("search_query") or any(
+            t.get("view_count") or t.get("duration") for t in tweets
+        ):
             platform = "youtube"
-        tweets = normalize_batch(tweets, platform)
+        items = normalize_batch(tweets, platform)
     search_term = raw.get("search_term", raw.get("search_query", ""))
 
-    if not tweets:
+    if not items:
         print("没有需要处理的数据。")
         sys.exit(0)
 
     t0 = datetime.now(dt_timezone.utc)
 
-    labeled = classify_tweets(tweets, goal, api_key)
-    target_tweets = [t for t in labeled if t["label"] == "TARGET"]
-    findings = extract_findings(target_tweets, goal, api_key)
+    items = extract_intents(items, goal, api_key)
+
+    # 收集 HIGH 意向评论
+    high_comments = []
+    for item in items:
+        for c in item.get("comments") or []:
+            if c.get("intent") == "HIGH":
+                high_comments.append({
+                    "author": c.get("author", ""),
+                    "content": c.get("content", ""),
+                    "parent_content": item.get("content", {}).get("title", ""),
+                    "parent_author": item.get("author", ""),
+                })
+
+    findings = extract_findings(high_comments, goal, api_key)
 
     output = {
         "filtered_at": datetime.now(dt_timezone.utc).isoformat(),
         "search_term": search_term,
         "goal": goal or "未指定",
-        "total": len(tweets),
-        "kept": len(target_tweets),
-        "discarded": len(tweets) - len(target_tweets),
+        "high_count": len(high_comments),
         "findings": findings,
-        "items": labeled,
+        "high_comments": high_comments,
+        "items": items,
     }
 
     out_path = _make_output_path(input_path)
@@ -198,7 +212,7 @@ def main():
 
     elapsed = (datetime.now(dt_timezone.utc) - t0).total_seconds()
     print(f"\n{'=' * 60}")
-    print(f"  保留: {len(target_tweets)} / 丢弃: {len(tweets) - len(target_tweets)}")
+    print(f"  🔥 高意向: {len(high_comments)} 条评论")
     print(f"  发现: {len(findings)} 条")
     print(f"  输出: {out_path}")
     print(f"  耗时: {elapsed:.1f}s")
