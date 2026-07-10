@@ -92,17 +92,17 @@ def test_normalize_label_irrelevant_fallback():
     assert normalize_label("") == "IRRELEVANT"
 
 
-# ---- build_classify_prompt (唯一 prompt 函数) ----
+# ---- _build_prompt (prompt 构建纯函数) ----
 
 def test_batch_prompt_includes_all_tweets_and_count():
     from _normalize import normalize_item
-    from _llm import build_classify_prompt
+    from _llm import _build_prompt
     items = [
         normalize_item({"tweet_id": "1", "author_handle": "a1", "tweet_text": "hello"}, "twitter"),
         normalize_item({"tweet_id": "2", "author_handle": "a2", "tweet_text": "world"}, "twitter"),
         normalize_item({"tweet_id": "3", "author_handle": "a3", "tweet_text": "foo"}, "twitter"),
     ]
-    prompt = build_classify_prompt(items, "测试目标")
+    prompt = _build_prompt(items, "测试目标", None)
     assert "hello" in prompt
     assert "world" in prompt
     assert "foo" in prompt

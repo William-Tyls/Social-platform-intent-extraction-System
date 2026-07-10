@@ -15,10 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import load_env  # noqa: E402
-from _llm import (          # noqa: E402
-    build_classify_prompt,
-    normalize_label, parse_llm_json,
-)
+from _llm import _build_prompt, classify, normalize_label, parse_llm_json  # noqa: E402
 from _normalize import normalize_batch  # noqa: E402
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -56,7 +53,7 @@ def _make_output_path(input_path: Path) -> Path:
 # ---- 分类 ----
 
 def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -> list[dict]:
-    """批量分类推文，优先一次批量调用，失败回退逐条。"""
+    """批量分类，调用 classify()。CLI 使用 OpenAI 客户端转发。"""
     if not goal:
         goal = "通用信息筛选，保留有价值的原创内容，过滤广告和无关帖子"
 
@@ -65,14 +62,14 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
 
     labels: list[str] = [""] * len(tweets)
 
-    # 第一步: 批量
+    # 第一步: 批量 — 使用 OpenAI 客户端但复用 _llm 的 prompt
     try:
-        batch_prompt = build_classify_prompt(tweets, goal)
+        prompt = _build_prompt(tweets, goal)
         resp = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                {"role": "user", "content": batch_prompt},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.1,
             max_tokens=len(tweets) * 15 + 20,
@@ -90,11 +87,12 @@ def classify_tweets(tweets: list[dict], goal: str, client, model: str = MODEL) -
         if labels[i]:
             continue
         try:
+            prompt = _build_prompt([t], goal)
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                    {"role": "user", "content": build_classify_prompt([t], goal)},
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
                 max_tokens=10,

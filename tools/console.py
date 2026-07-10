@@ -58,10 +58,7 @@ from reddit_extractor import (
 )
 
 # LLM 过滤共享模块
-from _llm import (
-    build_classify_prompt,
-    normalize_label, call_deepseek, parse_comment_labels,
-)
+from _llm import classify, parse_comment_labels, ClassificationError
 from _normalize import normalize_batch  # 跨平台统一 schema
 
 # ---- 路径 ----
@@ -2043,30 +2040,16 @@ class ConsoleApp:
                     self.msg_queue.put({"type": "llm_done"})
                     return
 
-                items = self.tweets_cache  # 已经是归一化格式
+                items = self.tweets_cache
                 counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}
                 labels = [""] * len(items)
 
-                # 第一阶段: 批量调用
+                # 第一阶段: 批量
                 try:
-                    prompt = build_classify_prompt(items, goal)
-                    raw = call_deepseek(
-                        [
-                            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-                            {"role": "user", "content": prompt},
-                        ],
-                        api_key=api_key,
-                        max_tokens=len(items) * 15 + 20,
-                        timeout=60,
-                        retries=1,
-                    )
-                    from _llm import parse_llm_json
-                    parsed = parse_llm_json(raw)
-                    if isinstance(parsed, list) and len(parsed) == len(items):
-                        labels = [normalize_label(str(x)) for x in parsed]
-                        self.msg_queue.put({"type": "log", "text": f"  批量分类成功: {len(labels)} 条", "level": "info"})
-                    else:
-                        self.msg_queue.put({"type": "log", "text": "  ⚠️ 批量返回长度不匹配, 回退逐条", "level": "warn"})
+                    labels = classify(items, goal, api_key=api_key)
+                    self.msg_queue.put({"type": "log", "text": f"  批量分类成功: {len(labels)} 条", "level": "info"})
+                except ClassificationError as e:
+                    self.msg_queue.put({"type": "log", "text": f"  ⚠️ {e}, 回退逐条", "level": "warn"})
                 except Exception as e:
                     self.msg_queue.put({"type": "log", "text": f"  ⚠️ 批量分类异常: {e}, 回退逐条", "level": "warn"})
 
@@ -2077,38 +2060,23 @@ class ConsoleApp:
                     if labels[i]:
                         continue
                     try:
-                        raw_item = call_deepseek(
-                            [
-                                {"role": "system", "content": "你是一个信息过滤助手。严格按格式回复。"},
-                                {"role": "user", "content": build_classify_prompt([item], goal)},
-                            ],
-                            api_key=api_key, max_tokens=10, timeout=30, retries=1,
-                        )
-                        labels[i] = normalize_label(raw_item)
+                        labels[i] = classify([item], goal, api_key=api_key)[0]
                     except Exception as e:
                         self.msg_queue.put({"type": "log", "text": f"  [{i+1}] API 调用失败: {e}", "level": "warn"})
                         labels[i] = "ERROR"
 
-                # 应用标签到 items
+                # 应用标签
                 labeled = []
                 for i, item in enumerate(items):
                     label = labels[i]
                     counts[label] = counts.get(label, 0) + 1
                     item["label"] = label
 
-                    # 评论区也批量分类
+                    # 评论区分类
                     comments = item.get("comments") or []
                     if comments:
-                        batch_prompt = build_classify_prompt(comments, goal, parent=item)
                         try:
-                            c_raw = call_deepseek(
-                                [
-                                    {"role": "system", "content": "你是一个评论过滤助手。只回复 JSON 数组。"},
-                                    {"role": "user", "content": batch_prompt},
-                                ],
-                                api_key=api_key, max_tokens=len(comments) * 15 + 10, timeout=60, retries=1,
-                            )
-                            c_labels = parse_comment_labels(c_raw, len(comments))
+                            c_labels = classify(comments, goal, parent=item, api_key=api_key)
                         except Exception:
                             c_labels = ["ERROR"] * len(comments)
                         c_counts = {"TARGET": 0, "AD": 0, "IRRELEVANT": 0, "ERROR": 0}

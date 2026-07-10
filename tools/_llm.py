@@ -1,18 +1,20 @@
 """LLM 过滤共享模块 — console.py 和 llm_filter.py 共用。
 
 提供:
-  - build_classify_prompt: 唯一的分类 prompt 函数
-  - call_deepseek: DeepSeek chat completions
-  - normalize_label / parse_llm_json / parse_comment_labels: 结果解析
+  - classify: 构建 prompt → 调 API → 解析 → 返回标签 (一站式)
+  - normalize_label / parse_comment_labels: 解析辅助
 
 用法:
-    from _llm import build_classify_prompt, call_deepseek
+    from _llm import classify
 
     # 批量分类帖子/视频
-    prompt = build_classify_prompt(items, "筛选目标")
+    labels = classify(items, "筛选目标", api_key=key)
 
-    # 分类评论 (指定 parent 提供原帖上下文)
-    prompt = build_classify_prompt(comments, "筛选目标", parent=item)
+    # 逐条兜底
+    labels = classify([item], "筛选目标", api_key=key)
+
+    # 分类评论
+    labels = classify(comments, "筛选目标", parent=item, api_key=key)
 
 环境变量: DEEPSEEK_API_KEY
 """
@@ -26,74 +28,95 @@ import time
 DEEPSEEK_CHAT_URL = "https://api.deepseek.com/chat/completions"
 MODEL = "deepseek-chat"
 
-_PLATFORM_LABEL = {"twitter": "推文", "reddit": "帖子", "youtube": "视频"}
 
 # ------------------------------------------------------------------
-# 唯一的分类 Prompt
+# 一站式分类
 # ------------------------------------------------------------------
 
 
-def build_classify_prompt(
+class ClassificationError(Exception):
+    """LLM 返回格式不正确（非数组、长度不匹配等）。"""
+
+
+def classify(
     items: list[dict],
     goal: str,
     *,
     parent: dict | None = None,
-) -> str:
-    """构建分类 prompt，要求 LLM 返回等长 JSON 标签数组。
+    api_key: str | None = None,
+) -> list[str]:
+    """构建 prompt → 调 DeepSeek API → 返回标签列表。
 
-    接受归一化后的 item 列表。``parent`` 为 None 时分类帖子/视频，
-    指定时分类评论（附带原帖上下文）。
+    ``parent`` 为 None 时分类帖子/视频，指定时分类评论（附带原帖上下文）。
 
-    item 格式:
-        {id, platform, author, content: {title, body}, meta: {...},
-         comments: [{author, content}, ...], ...}
+    item 格式 (归一化 schema):
+        {author, content: {title, body}, meta: {likes, replies, views},
+         comments: [{author, content}, ...]}
 
-    用法:
-        # 批量分类
-        prompt = build_classify_prompt(all_items, "筛选真实用户")
+    返回: ["TARGET", "AD", "IRRELEVANT", ...]
 
-        # 逐条回退
-        prompt = build_classify_prompt([item], "筛选真实用户")
+    抛出:
+        ClassificationError — LLM 返回格式不正确
+        ValueError           — api_key 未设置
+        requests.RequestException — 网络错误
 
-        # 评论分类
-        prompt = build_classify_prompt(item["comments"], goal, parent=item)
+    >>> labels = classify(items, "筛选真实用户", api_key="sk-xxx")
+    >>> labels = classify(comments, goal, parent=item, api_key="sk-xxx")
     """
+    if not items:
+        return []
+
+    prompt = _build_prompt(items, goal, parent)
+    raw = call_deepseek(
+        [
+            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+            {"role": "user", "content": prompt},
+        ],
+        api_key=api_key,
+        max_tokens=len(items) * 15 + 20,
+    )
+    arr = parse_llm_json(raw)
+    if isinstance(arr, list) and len(arr) == len(items):
+        return [normalize_label(str(x)) for x in arr]
+    raise ClassificationError(
+        f"LLM 返回格式错误: 期望 {len(items)} 个标签, "
+        f"实际 {type(arr).__name__}"
+    )
+
+
+# ------------------------------------------------------------------
+# Prompt 构建 (内部)
+# ------------------------------------------------------------------
+
+
+def _build_prompt(items: list[dict], goal: str, parent: dict | None = None) -> str:
+    """格式化 items 为编号文本块。"""
     if parent is not None:
-        return _build_prompt_comments(items, goal, parent)
-    return _build_prompt_items(items, goal)
+        return _build_comment_prompt(items, goal, parent)
 
-
-def _build_prompt_items(items: list[dict], goal: str) -> str:
-    """构建帖子/视频分类 prompt。"""
     blocks = []
     for i, it in enumerate(items):
         content = it.get("content", {})
         meta = it.get("meta", {})
         author = it.get("author", "?")
-        platform = _PLATFORM_LABEL.get(it.get("platform", ""), "内容")
-
         text = content.get("title", "") or content.get("body", "")
 
-        # 互动数据 (YouTube 用播放量, 其他用赞/评)
-        if it.get("platform") == "youtube":
-            stats = f"播放{meta.get('views', 0):,} | 赞{meta.get('likes', 0):,} | 评{meta.get('replies', 0):,}"
-        else:
-            stats = f"赞{meta.get('likes', 0):,} | 评{meta.get('replies', 0):,}"
+        lines = [f"[{i+1}] @{author}: {text[:300]}"]
 
-        lines = [f"[{i+1}] 【{platform}】@{author}: {text[:300]}"]
-        if text or stats:
-            lines.append(f"    {stats}")
+        parts = []
+        if meta.get("views"):
+            parts.append(f"播放{meta['views']:,}")
+        parts.append(f"赞{meta.get('likes', 0):,}")
+        parts.append(f"评{meta.get('replies', 0):,}")
+        lines.append(f"    {' | '.join(parts)}")
 
-        # YouTube 摘要
-        if it.get("platform") == "youtube" and content.get("body"):
-            lines.append(f"    摘要: {content['body'][:200]}")
+        if content.get("body"):
+            lines.append(f"    {content['body'][:200]}")
 
-        # 前 3 条评论作为上下文
-        comments = it.get("comments") or []
-        for ci, c in enumerate(comments[:3]):
-            c_author = c.get("author", "?")
-            c_text = c.get("content", "")[:120]
-            lines.append(f"    评{ci+1}: @{c_author}: {c_text}")
+        for ci, c in enumerate((it.get("comments") or [])[:3]):
+            lines.append(
+                f"    评{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:120]}"
+            )
 
         blocks.append("\n".join(lines))
 
@@ -108,15 +131,17 @@ def _build_prompt_items(items: list[dict], goal: str) -> str:
     )
 
 
-def _build_prompt_comments(comments: list[dict], goal: str, parent: dict) -> str:
-    """构建评论分类 prompt。"""
+def _build_comment_prompt(comments: list[dict], goal: str, parent: dict) -> str:
+    """格式化评论列表。"""
     parent_author = parent.get("author", "?")
     parent_content = parent.get("content", {})
     parent_text = parent_content.get("title", "") or parent_content.get("body", "")
 
     blocks = []
     for i, c in enumerate(comments):
-        blocks.append(f"[{i+1}] @{c.get('author', '?')}: {c.get('content', '')[:250]}")
+        blocks.append(
+            f"[{i+1}] @{c.get('author', '?')}: {c.get('content', '')[:250]}"
+        )
 
     return (
         f"判断以下评论是否与筛选目标相关。返回 JSON 数组。\n\n"
