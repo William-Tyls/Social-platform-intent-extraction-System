@@ -44,114 +44,106 @@ def classify(
     *,
     parent: dict | None = None,
     api_key: str | None = None,
+    client: object | None = None,
 ) -> list[str]:
-    """构建 prompt → 调 DeepSeek API → 返回标签列表。
+    """构建 prompt → 调 API → 返回标签列表。
 
-    ``parent`` 为 None 时分类帖子/视频，指定时分类评论（附带原帖上下文）。
-
-    item 格式 (归一化 schema):
-        {author, content: {title, body}, meta: {likes, replies, views},
-         comments: [{author, content}, ...]}
-
-    返回: ["TARGET", "AD", "IRRELEVANT", ...]
-
-    抛出:
-        ClassificationError — LLM 返回格式不正确
-        ValueError           — api_key 未设置
-        requests.RequestException — 网络错误
-
-    >>> labels = classify(items, "筛选真实用户", api_key="sk-xxx")
-    >>> labels = classify(comments, goal, parent=item, api_key="sk-xxx")
+    ``parent`` 为 None 时分类帖子/视频，指定时分类评论。
+    ``client`` 为可选的外部 OpenAI 客户端（llm_filter.py CLI 使用）。
     """
     if not items:
         return []
 
-    prompt = _build_prompt(items, goal, parent)
-    raw = call_deepseek(
-        [
-            {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
-            {"role": "user", "content": prompt},
-        ],
-        api_key=api_key,
-        max_tokens=len(items) * 15 + 20,
+    # 构建编号文本块
+    blocks = []
+    for i, it in enumerate(items):
+        author = it.get("author", "?")
+        content = it.get("content", {})
+        meta = it.get("meta", {})
+
+        if parent is not None:
+            # 评论模式: content 是纯文本字符串 {"author": ..., "content": "..."}
+            c_text = content if isinstance(content, str) else content.get("content", "") or ""
+            blocks.append(f"[{i+1}] @{author}: {c_text[:250]}")
+        else:
+            # 帖子/视频模式: author + title/body + stats + 前3条评论
+            text = content.get("title", "") or content.get("body", "")
+            lines = [f"[{i+1}] @{author}: {text[:300]}"]
+
+            parts = []
+            if meta.get("views"):
+                parts.append(f"播放{meta['views']:,}")
+            parts.append(f"赞{meta.get('likes', 0):,}")
+            parts.append(f"评{meta.get('replies', 0):,}")
+            lines.append(f"    {' | '.join(parts)}")
+
+            if content.get("body"):
+                lines.append(f"    {content['body'][:200]}")
+
+            for ci, c in enumerate(
+                (it.get("comments") or [])[:3]
+            ):
+                lines.append(
+                    f"    评{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:120]}"
+                )
+
+            blocks.append("\n".join(lines))
+
+    # 拼装最终 prompt
+    if parent is not None:
+        parent_author = parent.get("author", "?")
+        parent_text = (
+            parent.get("content", {}).get("title", "")
+            or parent.get("content", {}).get("body", "")
+        )[:200]
+        header = (
+            f"判断以下评论是否与筛选目标相关。返回 JSON 数组。\n\n"
+            f"筛选目标：{goal}\n"
+            f"原帖 @{parent_author}: {parent_text}\n\n"
+        )
+    else:
+        header = (
+            f"判断以下每条内容是否与筛选目标相关。返回 JSON 数组。\n\n"
+            f"筛选目标：{goal}\n\n"
+        )
+
+    prompt = (
+        header
+        + ("\n---\n".join(blocks) if parent is None else "\n".join(blocks))
+        + f"\n\n"
+        f"逐条判断, 仅回复 JSON 数组:\n"
+        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
+        f"数组长度 = {len(items)}。"
     )
+
+    # 调 API
+    if client is not None:
+        resp = client.chat.completions.create(  # type: ignore[union-attr]
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=len(items) * 15 + 20,
+        )
+        raw = resp.choices[0].message.content.strip()  # type: ignore[union-attr]
+    else:
+        raw = call_deepseek(
+            [
+                {"role": "system", "content": "你是一个信息过滤助手。只回复 JSON 数组。"},
+                {"role": "user", "content": prompt},
+            ],
+            api_key=api_key,
+            max_tokens=len(items) * 15 + 20,
+        )
+
     arr = parse_llm_json(raw)
     if isinstance(arr, list) and len(arr) == len(items):
         return [normalize_label(str(x)) for x in arr]
     raise ClassificationError(
         f"LLM 返回格式错误: 期望 {len(items)} 个标签, "
         f"实际 {type(arr).__name__}"
-    )
-
-
-# ------------------------------------------------------------------
-# Prompt 构建 (内部)
-# ------------------------------------------------------------------
-
-
-def _build_prompt(items: list[dict], goal: str, parent: dict | None = None) -> str:
-    """格式化 items 为编号文本块。"""
-    if parent is not None:
-        return _build_comment_prompt(items, goal, parent)
-
-    blocks = []
-    for i, it in enumerate(items):
-        content = it.get("content", {})
-        meta = it.get("meta", {})
-        author = it.get("author", "?")
-        text = content.get("title", "") or content.get("body", "")
-
-        lines = [f"[{i+1}] @{author}: {text[:300]}"]
-
-        parts = []
-        if meta.get("views"):
-            parts.append(f"播放{meta['views']:,}")
-        parts.append(f"赞{meta.get('likes', 0):,}")
-        parts.append(f"评{meta.get('replies', 0):,}")
-        lines.append(f"    {' | '.join(parts)}")
-
-        if content.get("body"):
-            lines.append(f"    {content['body'][:200]}")
-
-        for ci, c in enumerate((it.get("comments") or [])[:3]):
-            lines.append(
-                f"    评{ci+1}: @{c.get('author', '?')}: {c.get('content', '')[:120]}"
-            )
-
-        blocks.append("\n".join(lines))
-
-    return (
-        f"判断以下每条内容是否与筛选目标相关。返回 JSON 数组。\n\n"
-        f"筛选目标：{goal}\n\n"
-        + "\n---\n".join(blocks)
-        + f"\n---\n\n"
-        f"逐条判断, 仅回复 JSON 数组:\n"
-        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
-        f"数组长度 = {len(items)}。"
-    )
-
-
-def _build_comment_prompt(comments: list[dict], goal: str, parent: dict) -> str:
-    """格式化评论列表。"""
-    parent_author = parent.get("author", "?")
-    parent_content = parent.get("content", {})
-    parent_text = parent_content.get("title", "") or parent_content.get("body", "")
-
-    blocks = []
-    for i, c in enumerate(comments):
-        blocks.append(
-            f"[{i+1}] @{c.get('author', '?')}: {c.get('content', '')[:250]}"
-        )
-
-    return (
-        f"判断以下评论是否与筛选目标相关。返回 JSON 数组。\n\n"
-        f"筛选目标：{goal}\n"
-        f"原帖 @{parent_author}: {parent_text[:200]}\n\n"
-        + "\n".join(blocks)
-        + f"\n\n"
-        f"逐条判断, 仅回复 JSON 数组:\n"
-        f'["TARGET", "AD", "IRRELEVANT", ...]\n'
-        f"数组长度 = {len(comments)}。"
     )
 
 
